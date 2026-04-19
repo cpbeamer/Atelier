@@ -25,6 +25,7 @@
   },
   "dependencies": {
     "@types/react-grid-layout": "^2.1.0",
+    "keytar": "^7.9.0",
     "react-grid-layout": "^2.2.3",
     "ws": "^8.20.0"
   }

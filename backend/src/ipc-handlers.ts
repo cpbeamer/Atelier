@@ -1,27 +1,37 @@
 // backend/src/ipc-handlers.ts
+import { projects, runs, milestones, modelConfig } from './db.js';
 import { ptyManager } from './pty-manager.js';
-import { projects, runs, milestones } from './db.js';
 import { createWorktree, removeWorktree } from './worktree.js';
 import { startSidecar, stopSidecar, getSidecarStatus } from './sidecar-lifecycle.js';
+import keytar from 'node-keytar';
 
-type RegisterFn = (name: string, handler: (opts: any) => Promise<void>) => void;
-const register: RegisterFn = (name, handler) => {
-  // Handler registration - handlers are called by the IPC router
-  console.log(`Registered handler: ${name}`);
-};
+const SERVICE_NAME = 'Atelier';
+const KEYCHAIN_PREFIX = 'atelier.provider.';
 
+// In-memory handler registry for WebSocket routing
+const handlerMap: Record<string, (opts: any) => Promise<any>> = {};
+
+// @ts-ignore - global registration for index.ts to find
+globalThis.__ipcHandlers = handlerMap;
+
+function register(name: string, handler: (opts: any) => Promise<any>) {
+  handlerMap[name] = handler;
+}
+
+function keychainKey(providerId: string, key: string) {
+  return `${KEYCHAIN_PREFIX}${providerId}.${key}`;
+}
+
+// Existing handlers
 register('pty.spawn', async (opts: { id: string; command: string; args: string[]; cwd?: string }) => {
   ptyManager.spawn(opts.id, opts.command, opts.args, opts.cwd);
 });
-
 register('pty.write', async (opts: { id: string; data: string }) => {
   ptyManager.write(opts.id, opts.data);
 });
-
 register('pty.resize', async (opts: { id: string; cols: number; rows: number }) => {
   ptyManager.resize(opts.id, opts.cols, opts.rows);
 });
-
 register('pty.kill', async (opts: { id: string }) => {
   ptyManager.kill(opts.id);
 });
@@ -36,10 +46,44 @@ register('milestone.listPending', async () => milestones.listPending());
 
 register('worktree.create', async (opts: { projectPath: string; projectSlug: string; runId: string }) =>
   createWorktree(opts.projectPath, opts.projectSlug, opts.runId));
-
 register('worktree.remove', async (opts: { worktreePath: string }) =>
   removeWorktree(opts.worktreePath));
 
 register('sidecar.status', async () => getSidecarStatus());
 register('sidecar.start', async () => { await startSidecar(); });
 register('sidecar.stop', async () => { await stopSidecar(); });
+
+// Model config handlers
+register('settings.modelConfig:get', async () => {
+  const rows = modelConfig.list() as any[];
+  const result: any[] = [];
+  for (const row of rows) {
+    const apiKey = await keytar.getPassword(SERVICE_NAME, keychainKey(row.id, 'apiKey'));
+    result.push({
+      id: row.id,
+      name: row.name,
+      baseUrl: row.base_url,
+      enabled: row.enabled === 1,
+      configured: !!apiKey,
+      models: JSON.parse(row.models_json || '[]'),
+    });
+  }
+  return result;
+});
+
+register('settings.modelConfig:set', async (opts: { id: string; enabled: boolean; models: string[] }) => {
+  modelConfig.setEnabled(opts.id, opts.enabled ? 1 : 0);
+  modelConfig.setModels(opts.id, JSON.stringify(opts.models));
+});
+
+register('settings.apiKey:get', async (opts: { providerId: string }) => {
+  return keytar.getPassword(SERVICE_NAME, keychainKey(opts.providerId, 'apiKey'));
+});
+
+register('settings.apiKey:set', async (opts: { providerId: string; apiKey: string }) => {
+  await keytar.setPassword(SERVICE_NAME, keychainKey(opts.providerId, 'apiKey'), opts.apiKey);
+});
+
+register('settings.apiKey:delete', async (opts: { providerId: string }) => {
+  await keytar.deletePassword(SERVICE_NAME, keychainKey(opts.providerId, 'apiKey'));
+});
