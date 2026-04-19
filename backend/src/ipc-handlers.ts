@@ -45,7 +45,11 @@ register('db.addProject', async (opts: { id: string; name: string; path: string 
 register('db.listRuns', async (opts: { projectId: string }) => runs.listByProject(opts.projectId));
 register('milestone.listPending', async () => getPendingMilestones());
 register('milestone.create', async (opts: { runId: string; name: string; payload: unknown }) => {
-  return createMilestone(opts.runId, opts.name, opts.payload);
+  try {
+    return await createMilestone(opts.runId, opts.name, opts.payload);
+  } catch (err) {
+    throw new Error(`Failed to create milestone: ${err}`);
+  }
 });
 register('milestone.resolve', async (opts: { id: string; verdict: string; reason?: string }) => {
   await resolveMilestone(opts.id, opts.verdict as 'Approved' | 'Rejected', opts.reason);
