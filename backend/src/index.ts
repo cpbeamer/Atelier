@@ -4,6 +4,11 @@ import { WebSocketServer } from 'ws';
 import fs from 'node:fs';
 import { ptyManager } from './pty-manager.js';
 import { startSidecar } from './sidecar-lifecycle.js';
+import './ipc-handlers.js';
+
+declare global {
+  var __ipcHandlers: Record<string, (opts: any) => Promise<any>> | undefined;
+}
 
 const PORT = 3000;
 const TEMPORAL_PATH = path.join(process.env.HOME || '', '.atelier', 'temporal', 'temporal');
@@ -93,6 +98,16 @@ wss.on('connection', (ws) => {
     } else if (msg.type === 'pty-resize') {
       const { id, cols, rows } = msg.payload;
       ptyManager.resize(id, cols, rows);
+    } else {
+      // Route to IPC handlers via globalThis registry
+      const handlers = globalThis.__ipcHandlers;
+      if (handlers && handlers[msg.type]) {
+        handlers[msg.type](msg.payload).then((result: any) => {
+          ws.send(JSON.stringify({ type: msg.type + ':response', id: msg.id, payload: result }));
+        }).catch((err: any) => {
+          ws.send(JSON.stringify({ type: msg.type + ':response', id: msg.id, error: err.message }));
+        });
+      }
     }
   });
 
