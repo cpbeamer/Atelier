@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { X, Check, XCircle } from 'lucide-react';
 import { invoke } from '../lib/ipc';
 
@@ -35,11 +35,17 @@ export function MilestoneInbox({ isOpen, onClose }: Props) {
           // Ignore parse errors
         }
       };
+      ws.onerror = () => {
+        console.error('WebSocket error');
+      };
+      ws.onclose = () => {
+        // WebSocket closed
+      };
       return () => ws.close();
     }
-  }, [isOpen]);
+  }, [isOpen, loadMilestones]);
 
-  async function loadMilestones() {
+  const loadMilestones = useCallback(async () => {
     setLoading(true);
     try {
       const pending = await invoke<Milestone[]>('milestone.listPending');
@@ -49,16 +55,16 @@ export function MilestoneInbox({ isOpen, onClose }: Props) {
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
 
-  async function handleResolve(id: string, verdict: 'Approved' | 'Rejected', reason?: string) {
+  const handleResolve = useCallback(async (id: string, verdict: 'Approved' | 'Rejected', reason?: string) => {
     try {
       await invoke('milestone.resolve', { id, verdict, reason });
       setMilestones(prev => prev.filter(m => m.id !== id));
     } catch (e) {
       console.error('Failed to resolve milestone:', e);
     }
-  }
+  }, []);
 
   if (!isOpen) return null;
 
