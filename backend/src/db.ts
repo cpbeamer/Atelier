@@ -1,18 +1,18 @@
 // backend/src/db.ts
-import Database from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 import path from 'node:path';
 import fs from 'node:fs';
 
 const DB_PATH = path.join(process.env.HOME || '', '.atelier', 'db', 'atelier.sqlite');
 
-let db: Database.Database;
+let db: Database;
 
-export function getDb(): Database.Database {
+export function getDb(): Database {
   if (!db) {
     const dir = path.dirname(DB_PATH);
     fs.mkdirSync(dir, { recursive: true });
     db = new Database(DB_PATH);
-    db.pragma('journal_mode = WAL');
+    db.run('PRAGMA journal_mode = WAL');
     migrate();
   }
   return db;
@@ -109,6 +109,7 @@ export const milestones = {
       .run(status, decided_at, decided_by, decision_reason, id),
   listPending: () => getDb().prepare("SELECT * FROM milestones WHERE status='pending' ORDER BY created_at").all(),
   listByRun: (runId: string) => getDb().prepare('SELECT * FROM milestones WHERE run_id = ? ORDER BY created_at').all(runId),
+  findById: (id: string) => getDb().prepare('SELECT * FROM milestones WHERE id = ?').get(id),
 };
 
 export const modelConfig = {

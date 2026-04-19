@@ -20,7 +20,7 @@ export function Sidebar({ onProjectSelect, onWorkflowSelect, onSettingsClick, ac
 
   async function loadProjects() {
     try {
-      const list = await fetch('http://localhost:3000/api/projects').then(r => r.json());
+      const list = await invoke<Project[]>('db.listProjects');
       setProjects(list as Project[]);
     } catch (e) {
       // Backend may not have DB ready yet
@@ -28,19 +28,23 @@ export function Sidebar({ onProjectSelect, onWorkflowSelect, onSettingsClick, ac
   }
 
   async function handleAddProject() {
-    if (window.electronAPI) {
-      const folderPath = await window.electronAPI.openFolder();
-      if (folderPath) {
+    const folderPath = prompt('Enter project path:');
+    if (folderPath) {
+      try {
         const projectName = folderPath.split('/').pop() || 'New Project';
-        const newProject: Project = {
-          id: `proj-${Date.now()}`,
+        const id = `proj-${Date.now()}`;
+        const now = Date.now();
+        await invoke('db.addProject', { id, name: projectName, path: folderPath });
+        setProjects(prev => [...prev, {
+          id,
           name: projectName,
           path: folderPath,
-          created_at: Date.now(),
-          last_opened_at: Date.now(),
+          created_at: now,
+          last_opened_at: now,
           settings_json: '{}',
-        };
-        setProjects(prev => [...prev, newProject]);
+        }]);
+      } catch (e) {
+        console.error('Failed to add project:', e);
       }
     }
   }

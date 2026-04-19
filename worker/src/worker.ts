@@ -1,17 +1,25 @@
 // worker/src/worker.ts
-import { Worker } from '@temporalio/worker';
-import * as activities from './activities.js';
+import { Worker, NativeConnection } from '@temporalio/worker';
+import * as activities from './activities.ts';
 import { watch } from 'chokidar';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function run() {
-  const worker = await Worker.create({
-    workflowsPath: new URL('./workflows', import.meta.url).pathname,
-    activities,
-    taskQueue: 'atelier-default-ts',
-    connectionOptions: { address: '127.0.0.1:7466' },
+  const connection = await NativeConnection.connect({
+    address: '127.0.0.1:7466',
   });
 
-  watch('./workflows/*.workflow.ts', { persistent: true }).on('change', (filePath) => {
+  const worker = await Worker.create({
+    connection,
+    workflowsPath: path.join(__dirname, 'workflows'),
+    activities,
+    taskQueue: 'atelier-default-ts',
+  });
+
+  watch(path.join(__dirname, 'workflows', '*.workflow.ts'), { persistent: true }).on('change', (filePath) => {
     console.log(`Workflow changed: ${filePath}`);
   });
 

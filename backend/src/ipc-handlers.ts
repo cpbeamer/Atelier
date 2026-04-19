@@ -4,7 +4,8 @@ import { ptyManager } from './pty-manager.js';
 import { createWorktree, removeWorktree } from './worktree.js';
 import { startSidecar, stopSidecar, getSidecarStatus } from './sidecar-lifecycle.js';
 import { createMilestone, resolveMilestone, getPendingMilestones } from './milestone-service.js';
-import keytar from 'node-keytar';
+import keytar from 'keytar';
+import { Client } from '@temporalio/client';
 
 const SERVICE_NAME = 'Atelier';
 const KEYCHAIN_PREFIX = 'atelier.provider.';
@@ -120,8 +121,11 @@ register('settings.apiKey:delete', async (opts: { providerId: string }) => {
 
 // Workflow handler
 register('workflow.start', async (opts: { name: string; input: any }) => {
-  const runId = `run-${Date.now()}`;
-  console.log(`Starting workflow ${opts.name} with input:`, opts.input);
-  // In production, this would start a Temporal workflow
-  return { runId };
+  const client = await Client.connect('127.0.0.1:7466');
+  const handle = await client.start('featurePipeline', {
+    args: [opts.input],
+    taskQueue: 'atelier-default-ts',
+    workflowId: `run-${Date.now()}`,
+  });
+  return { runId: handle.workflowId };
 });

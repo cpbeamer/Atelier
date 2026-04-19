@@ -23,7 +23,7 @@ function getWs(): WebSocket {
     };
     ws.onerror = () => {
       // Reject all pending on error
-      for (const [id, { reject }] of pending) {
+      for (const [_id, { reject }] of pending) {
         reject(new Error('WebSocket error'));
       }
       pending.clear();
@@ -31,7 +31,7 @@ function getWs(): WebSocket {
     };
     ws.onclose = () => {
       // Reject all pending on close
-      for (const [id, { reject }] of pending) {
+      for (const [_id, { reject }] of pending) {
         reject(new Error('WebSocket closed'));
       }
       pending.clear();

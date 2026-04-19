@@ -1,7 +1,7 @@
 // worker/src/workflows/feature-pipeline.ts
 import { proxyActivities, executeChild } from '@temporalio/workflow';
-import type * as activities from '../activities.js';
-import type { AgentChildInput, agentChild } from './agent-child.js';
+import type * as activities from '../activities.ts';
+import type { AgentChildInput, agentChild } from './agent-child.ts';
 
 const { createMilestone } = proxyActivities<typeof activities>({
   startToCloseTimeout: '5 minutes',
