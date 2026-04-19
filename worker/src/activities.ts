@@ -1,16 +1,7 @@
-import { keytar } from 'keytar';
-
-const SERVICE_NAME = 'Atelier';
-const KEYCHAIN_PREFIX = 'atelier.provider.';
-
-function keychainKey(providerId: string, key: string) {
-  return `${KEYCHAIN_PREFIX}${providerId}.${key}`;
-}
-
 export async function callMiniMax(system: string, user: string): Promise<string> {
-  const apiKey = await keytar.getPassword(SERVICE_NAME, keychainKey('minimax', 'apiKey'));
+  const apiKey = process.env.MINIMAX_API_KEY;
   if (!apiKey) {
-    throw new Error('MiniMax API key not configured. Add it in Settings.');
+    throw new Error('MiniMax API key not configured. Set the MINIMAX_API_KEY environment variable.');
   }
 
   const response = await fetch('https://api.minimax.chat/v1/chat/completions', {
@@ -53,17 +44,13 @@ export async function spawnAgent(
     }
   }
 
-  // For MVP, we use a simple prompt-based approach
-  // Persona files contain the system prompt
-  const personaPrompts: Record<string, string> = {
-    'Researcher A': 'You are Researcher A, a thorough researcher...',
-    'Researcher B': 'You are Researcher B, a critical analyst...',
-    'Synthesizer': 'You are Synthesizer, an expert at combining...',
-    'Architect': 'You are Architect, a senior technical leader...',
-    'Code Writer': 'You are Code Writer, a pragmatic software engineer...',
-  };
-
-  const systemPrompt = personaPrompts[agentName] || 'You are a helpful assistant.';
+  // Load persona content from .atelier/agents/{persona}.md
+  const personaPath = `.atelier/agents/${persona}.md`;
+  const personaFile = Bun.file(personaPath);
+  if (!await personaFile.exists()) {
+    throw new Error(`Persona file not found: ${personaPath}`);
+  }
+  const systemPrompt = await personaFile.text();
   const fullPrompt = `${task}${contextStr}`;
 
   return callMiniMax(systemPrompt, fullPrompt);
