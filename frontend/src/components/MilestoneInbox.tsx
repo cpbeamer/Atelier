@@ -43,7 +43,7 @@ export function MilestoneInbox({ isOpen, onClose }: Props) {
       };
       return () => ws.close();
     }
-  }, [isOpen, loadMilestones]);
+  }, [isOpen]);
 
   const loadMilestones = useCallback(async () => {
     setLoading(true);
