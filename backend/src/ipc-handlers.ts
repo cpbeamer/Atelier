@@ -1,5 +1,6 @@
 // backend/src/ipc-handlers.ts
 import { ptyManager } from './pty-manager.js';
+import { projects, runs, milestones } from './db.js';
 
 type RegisterFn = (name: string, handler: (opts: any) => Promise<void>) => void;
 const register: RegisterFn = (name, handler) => {
@@ -22,3 +23,11 @@ register('pty.resize', async (opts: { id: string; cols: number; rows: number }) 
 register('pty.kill', async (opts: { id: string }) => {
   ptyManager.kill(opts.id);
 });
+
+register('db.listProjects', async () => projects.list());
+register('db.addProject', async (opts: { id: string; name: string; path: string }) => {
+  const now = Date.now();
+  projects.insert(opts.id, opts.name, opts.path, now, now);
+});
+register('db.listRuns', async (opts: { projectId: string }) => runs.listByProject(opts.projectId));
+register('milestone.listPending', async () => milestones.listPending());
