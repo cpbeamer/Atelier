@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { WebSocketServer } from 'ws';
-import * as pty from 'node-pty';
 import fs from 'node:fs';
+import { ptyManager } from './pty-manager.js';
 
 const PORT = 3000;
 const BINARIES_DIR = path.join(process.cwd(), '..', 'binaries');
@@ -32,53 +32,78 @@ const temporalProcess = startTemporal();
 // WebSocket Server for UI
 const wss = new WebSocketServer({ port: PORT });
 
+// PTY subscriptions: maps PTY ID to set of subscribed WebSocket clients
+const ptySubscriptions = new Map<string, Set<WebSocket>>();
+
+// Track which PTY IDs have registered handlers (to avoid duplicate registration)
+const ptyHandlersRegistered = new Set<string>();
+
 wss.on('connection', (ws) => {
   console.log('UI connected');
-  let ptyProcess: pty.IPty | null = null;
 
   ws.on('message', (data) => {
     const msg = JSON.parse(data.toString());
 
-    if (msg.type === 'spawn') {
-      const { command, args, cwd } = msg.payload;
-      
-      if (ptyProcess) {
-        ptyProcess.kill();
+    if (msg.type === 'pty-subscribe') {
+      const { id } = msg.payload;
+      if (!ptySubscriptions.has(id)) {
+        ptySubscriptions.set(id, new Set());
+      }
+      ptySubscriptions.get(id)!.add(ws);
+
+      // Register PTY event handlers for this ID if not already registered
+      if (!ptyHandlersRegistered.has(id)) {
+        ptyManager.onData(id, (data) => {
+          const subscribers = ptySubscriptions.get(id);
+          if (subscribers) {
+            const message = JSON.stringify({ type: 'pty-output', payload: { id, data } });
+            subscribers.forEach((ws) => {
+              if (ws.readyState === ws.OPEN) {
+                ws.send(message);
+              }
+            });
+          }
+        });
+
+        ptyManager.onExit(id, (exitCode, signal) => {
+          const subscribers = ptySubscriptions.get(id);
+          if (subscribers) {
+            const message = JSON.stringify({ type: 'pty-exit', payload: { id, exitCode, signal } });
+            subscribers.forEach((ws) => {
+              if (ws.readyState === ws.OPEN) {
+                ws.send(message);
+              }
+            });
+          }
+          ptySubscriptions.delete(id);
+          ptyHandlersRegistered.delete(id);
+        });
+
+        ptyHandlersRegistered.add(id);
       }
 
-      console.log(`Spawning PTY: ${command} ${args.join(' ')}`);
-      
-      ptyProcess = pty.spawn(command, args, {
-        name: 'xterm-color',
-        cols: 80,
-        rows: 24,
-        cwd: cwd || process.cwd(),
-        env: process.env as any
-      });
-
-      ptyProcess.onData((data) => {
-        ws.send(JSON.stringify({ type: 'output', payload: data }));
-      });
-
-      ptyProcess.onExit(({ exitCode, signal }) => {
-        ws.send(JSON.stringify({ type: 'exit', payload: { exitCode, signal } }));
-        ptyProcess = null;
-      });
-    } else if (msg.type === 'input') {
-      if (ptyProcess) {
-        ptyProcess.write(msg.payload);
-      }
-    } else if (msg.type === 'resize') {
-      if (ptyProcess) {
-        ptyProcess.resize(msg.payload.cols, msg.payload.rows);
-      }
+      console.log(`Client subscribed to PTY: ${id}`);
+    } else if (msg.type === 'pty-spawn') {
+      const { id, command, args, cwd } = msg.payload;
+      console.log(`Spawning PTY ${id}: ${command} ${args.join(' ')}`);
+      ptyManager.spawn(id, command, args, cwd);
+    } else if (msg.type === 'pty-write') {
+      const { id, data } = msg.payload;
+      ptyManager.write(id, data);
+    } else if (msg.type === 'pty-resize') {
+      const { id, cols, rows } = msg.payload;
+      ptyManager.resize(id, cols, rows);
     }
   });
 
   ws.on('close', () => {
     console.log('UI disconnected');
-    if (ptyProcess) {
-      ptyProcess.kill();
+    // Remove this socket from all PTY subscriptions
+    for (const [id, subscribers] of ptySubscriptions) {
+      subscribers.delete(ws);
+      if (subscribers.size === 0) {
+        ptySubscriptions.delete(id);
+      }
     }
   });
 });
