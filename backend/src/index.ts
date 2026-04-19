@@ -6,8 +6,7 @@ import { ptyManager } from './pty-manager.js';
 import { startSidecar } from './sidecar-lifecycle.js';
 
 const PORT = 3000;
-const BINARIES_DIR = path.join(process.cwd(), '..', 'binaries');
-const TEMPORAL_PATH = path.join(BINARIES_DIR, 'temporal.exe');
+const TEMPORAL_PATH = path.join(process.env.HOME || '', '.atelier', 'temporal', 'temporal');
 
 // Start Temporal Sidecar
 function startTemporal() {

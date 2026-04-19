@@ -1,6 +1,6 @@
 // frontend/src/components/Sidebar.tsx
 import { useState, useEffect } from 'react';
-import { FolderClosed, Play, Settings, SquareTerminal, Plus, Inbox } from 'lucide-react';
+import { FolderClosed, Play, Settings, SquareTerminal, Plus } from 'lucide-react';
 import type { Project } from '../lib/db';
 
 interface Props {
@@ -26,6 +26,24 @@ export function Sidebar({ onProjectSelect, onWorkflowSelect, activeProject }: Pr
     }
   }
 
+  async function handleAddProject() {
+    if (window.electronAPI) {
+      const folderPath = await window.electronAPI.openFolder();
+      if (folderPath) {
+        const projectName = folderPath.split('/').pop() || 'New Project';
+        const newProject: Project = {
+          id: `proj-${Date.now()}`,
+          name: projectName,
+          path: folderPath,
+          created_at: Date.now(),
+          last_opened_at: Date.now(),
+          settings_json: '{}',
+        };
+        setProjects(prev => [...prev, newProject]);
+      }
+    }
+  }
+
   async function handleProjectClick(project: Project) {
     setWorkflows([
       { name: 'feature', language: 'typescript' },
@@ -33,6 +51,10 @@ export function Sidebar({ onProjectSelect, onWorkflowSelect, activeProject }: Pr
       { name: 'research', language: 'python' },
     ]);
     onProjectSelect?.(project);
+  }
+
+  function handleSettingsClick() {
+    alert('Settings panel coming soon');
   }
 
   return (
@@ -47,7 +69,7 @@ export function Sidebar({ onProjectSelect, onWorkflowSelect, activeProject }: Pr
       <div className="flex-1 overflow-y-auto p-2">
         <div className="flex items-center justify-between mb-2">
           <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-2">Projects</div>
-          <button onClick={() => {/* TODO: folder picker */}} className="p-1 rounded hover:bg-secondary">
+          <button onClick={handleAddProject} className="p-1 rounded hover:bg-secondary">
             <Plus className="w-3 h-3" />
           </button>
         </div>
@@ -88,7 +110,10 @@ export function Sidebar({ onProjectSelect, onWorkflowSelect, activeProject }: Pr
 
       {/* Settings */}
       <div className="p-4 border-t border-border">
-        <button className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors">
+        <button
+          onClick={handleSettingsClick}
+          className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
+        >
           <Settings className="w-4 h-4" />
           Settings
         </button>

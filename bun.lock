@@ -36,6 +36,7 @@
       "dependencies": {
         "@tailwindcss/vite": "^4.2.2",
         "@temporalio/client": "^1.16.0",
+        "@types/react-grid-layout": "^2.1.0",
         "clsx": "^2.1.1",
         "lucide-react": "^1.8.0",
         "react": "^19.1.0",

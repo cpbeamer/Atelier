@@ -1,4 +1,4 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 
 function createWindow() {
@@ -6,8 +6,9 @@ function createWindow() {
     width: 1200,
     height: 800,
     webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false, // For simplicity in MVP, but should be true in production
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
     },
     titleBarStyle: 'hidden',
     titleBarOverlay: true
@@ -20,6 +21,14 @@ function createWindow() {
     win.loadFile(path.join(__dirname, '../frontend/dist/index.html'));
   }
 }
+
+// Handle folder picker
+ipcMain.handle('dialog:openFolder', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory']
+  });
+  return result.filePaths[0] || null;
+});
 
 app.whenReady().then(() => {
   createWindow();

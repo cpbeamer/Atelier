@@ -13,7 +13,7 @@ function App() {
   const [showInbox, setShowInbox] = useState(false);
   const [workflowActive, setWorkflowActive] = useState(false);
 
-  const handleWorkflowSelect = useCallback((workflow: { name: string; language: string }) => {
+  const handleWorkflowSelect = useCallback((_workflow: { name: string; language: string }) => {
     setWorkflowActive(true);
     setActiveRun(`run-${Date.now()}`);
     setPanes([
