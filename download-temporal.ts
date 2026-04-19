@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-const BINARIES_DIR = path.join(process.cwd(), 'src-tauri', 'binaries');
+const BINARIES_DIR = path.join(process.cwd(), 'binaries');
 fs.mkdirSync(BINARIES_DIR, { recursive: true });
 
 async function downloadTemporal() {
@@ -22,11 +22,14 @@ async function downloadTemporal() {
   spawnSync('powershell', ['-Command', `Expand-Archive -Path '${destFile}' -DestinationPath '${BINARIES_DIR}' -Force`], { stdio: 'inherit' });
   
   // The temporal CLI binary is temporal.exe
-  const targetBinary = path.join(BINARIES_DIR, 'temporal-x86_64-pc-windows-msvc.exe');
-  fs.renameSync(path.join(BINARIES_DIR, 'temporal.exe'), targetBinary);
+  const extractedPath = path.join(BINARIES_DIR, 'temporal.exe');
+  if (fs.existsSync(extractedPath)) {
+    console.log(`Temporal binary extracted to ${extractedPath}`);
+  }
+  
   fs.unlinkSync(destFile);
   
-  console.log(`Successfully installed Temporal binary at ${targetBinary}`);
+  console.log(`Successfully installed Temporal binary at ${extractedPath}`);
 }
 
 downloadTemporal().catch(console.error);

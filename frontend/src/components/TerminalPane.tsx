@@ -1,14 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
-import { invoke } from '@tauri-apps/api/core';
-import { listen, Event } from '@tauri-apps/api/event';
 import 'xterm/css/xterm.css';
 
 export function TerminalPane({ isActive }: { isActive: boolean }) {
   const terminalRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const socketRef = useRef<WebSocket | null>(null);
   const [isRunning, setIsRunning] = useState(false);
 
   useEffect(() => {
@@ -33,12 +32,30 @@ export function TerminalPane({ isActive }: { isActive: boolean }) {
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;
 
+    // Setup WebSocket
+    const socket = new WebSocket('ws://localhost:3000');
+    socketRef.current = socket;
+
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
+      if (msg.type === 'output') {
+        term.write(msg.payload);
+      } else if (msg.type === 'exit') {
+        setIsRunning(false);
+        term.writeln('\r\n[Process Exited]');
+      }
+    };
+
     term.onData((data) => {
-      invoke('write_pty', { data }).catch(console.error);
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: 'input', payload: data }));
+      }
     });
 
     term.onResize(({ cols, rows }) => {
-      invoke('resize_pty', { cols, rows }).catch(console.error);
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: 'resize', payload: { cols, rows } }));
+      }
     });
 
     const handleResize = () => fitAddon.fit();
@@ -46,48 +63,25 @@ export function TerminalPane({ isActive }: { isActive: boolean }) {
 
     return () => {
       window.removeEventListener('resize', handleResize);
+      socket.close();
       term.dispose();
-    };
-  }, []);
-
-  useEffect(() => {
-    const unlistenData = listen<number[]>('pty-data', (event) => {
-      if (xtermRef.current) {
-        // Convert the number array (bytes) to Uint8Array to string
-        const text = new TextDecoder().decode(new Uint8Array(event.payload));
-        xtermRef.current.write(text);
-      }
-    });
-
-    const unlistenExit = listen('pty-exit', () => {
-      setIsRunning(false);
-      if (xtermRef.current) {
-        xtermRef.current.writeln('\r\n[Process Exited]');
-      }
-    });
-
-    return () => {
-      unlistenData.then((f) => f());
-      unlistenExit.then((f) => f());
     };
   }, []);
 
   // Trigger agent start when requested
   useEffect(() => {
-    if (isActive && !isRunning) {
+    if (isActive && !isRunning && socketRef.current?.readyState === WebSocket.OPEN) {
       setIsRunning(true);
       xtermRef.current?.clear();
       xtermRef.current?.writeln('[Starting Claude Code...]\r\n');
       
-      // Fallback: Use native npx cmd if WSL is not preferred or available
-      invoke('spawn_pty', { 
-        command: 'cmd.exe',
-        args: ['/c', 'npx @anthropic-ai/claude-code --dangerously-skip-permissions']
-      }).catch((err) => {
-        console.error(err);
-        xtermRef.current?.writeln(`\r\n[Failed to start: ${err}]`);
-        setIsRunning(false);
-      });
+      socketRef.current.send(JSON.stringify({
+        type: 'spawn',
+        payload: {
+          command: 'cmd.exe',
+          args: ['/c', 'npx @anthropic-ai/claude-code --dangerously-skip-permissions']
+        }
+      }));
     }
   }, [isActive, isRunning]);
 
