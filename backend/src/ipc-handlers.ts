@@ -43,7 +43,13 @@ register('db.addProject', async (opts: { id: string; name: string; path: string 
   projects.insert(opts.id, opts.name, opts.path, now, now);
 });
 register('db.listRuns', async (opts: { projectId: string }) => runs.listByProject(opts.projectId));
-register('milestone.listPending', async () => getPendingMilestones());
+register('milestone.listPending', async () => {
+  try {
+    return await getPendingMilestones();
+  } catch (err) {
+    throw new Error(`Failed to list pending milestones: ${err}`);
+  }
+});
 register('milestone.create', async (opts: { runId: string; name: string; payload: unknown }) => {
   try {
     return await createMilestone(opts.runId, opts.name, opts.payload);
@@ -52,7 +58,11 @@ register('milestone.create', async (opts: { runId: string; name: string; payload
   }
 });
 register('milestone.resolve', async (opts: { id: string; verdict: string; reason?: string }) => {
-  await resolveMilestone(opts.id, opts.verdict as 'Approved' | 'Rejected', opts.reason);
+  try {
+    await resolveMilestone(opts.id, opts.verdict as 'Approved' | 'Rejected', opts.reason);
+  } catch (err) {
+    throw new Error(`Failed to resolve milestone: ${err}`);
+  }
 });
 
 register('worktree.create', async (opts: { projectPath: string; projectSlug: string; runId: string }) =>
