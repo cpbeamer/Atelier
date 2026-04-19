@@ -227,6 +227,21 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // GET /api/settings/apiKey/:providerId - get API key from keychain
+  if (req.method === 'GET' && url.pathname.startsWith('/api/settings/apiKey/')) {
+    const providerId = url.pathname.split('/').pop();
+    try {
+      const keytar = await import('keytar');
+      const apiKey = await keytar.default.getPassword('Atelier', `atelier.provider.${providerId}.apiKey`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ apiKey: apiKey || null }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: String(err) }));
+    }
+    return;
+  }
+
   // Default: 404
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: 'Not found' }));
