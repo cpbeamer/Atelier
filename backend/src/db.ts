@@ -59,7 +59,24 @@ function migrate() {
 
     CREATE INDEX IF NOT EXISTS idx_runs_project ON workflow_runs(project_id, started_at DESC);
     CREATE INDEX IF NOT EXISTS idx_milestones_pending ON milestones(status);
+
+    CREATE TABLE IF NOT EXISTS model_config (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      base_url TEXT NOT NULL,
+      enabled INTEGER DEFAULT 0,
+      models_json TEXT DEFAULT '[]'
+    );
   `);
+
+  // Seed MiniMax and OpenRouter if no providers exist
+  const count = getDb().prepare('SELECT COUNT(*) as c FROM model_config').get() as { c: number };
+  if (count.c === 0) {
+    getDb().prepare(`INSERT INTO model_config (id, name, base_url, enabled, models_json) VALUES (?,?,?,?,?)`)
+      .run('minimax', 'MiniMax', 'https://api.minimax.chat/v1', 0, '["MiniMax/Abab6.5s-chat","MiniMax/Abab6.5-chat"]');
+    getDb().prepare(`INSERT INTO model_config (id, name, base_url, enabled, models_json) VALUES (?,?,?,?,?)`)
+      .run('openrouter', 'OpenRouter', 'https://openrouter.ai/api/v1', 0, '["anthropic/claude-3.5-sonnet","openai/gpt-4o"]');
+  }
 }
 
 export const projects = {
@@ -92,4 +109,20 @@ export const milestones = {
       .run(status, decided_at, decided_by, decision_reason, id),
   listPending: () => getDb().prepare("SELECT * FROM milestones WHERE status='pending' ORDER BY created_at").all(),
   listByRun: (runId: string) => getDb().prepare('SELECT * FROM milestones WHERE run_id = ? ORDER BY created_at').all(runId),
+};
+
+export const modelConfig = {
+  upsert: (id: string, name: string, baseUrl: string, enabled: number, modelsJson: string) =>
+    getDb().prepare(`
+      INSERT INTO model_config (id, name, base_url, enabled, models_json)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        name=excluded.name, base_url=excluded.base_url,
+        enabled=excluded.enabled, models_json=excluded.models_json
+    `).run(id, name, baseUrl, enabled, modelsJson),
+  list: () => getDb().prepare('SELECT * FROM model_config ORDER BY name').all(),
+  setEnabled: (id: string, enabled: number) =>
+    getDb().prepare('UPDATE model_config SET enabled=? WHERE id=?').run(enabled, id),
+  setModels: (id: string, modelsJson: string) =>
+    getDb().prepare('UPDATE model_config SET models_json=? WHERE id=?').run(modelsJson, id),
 };
