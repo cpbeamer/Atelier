@@ -59,13 +59,19 @@ register('settings.modelConfig:get', async () => {
   const result: any[] = [];
   for (const row of rows) {
     const apiKey = await keytar.getPassword(SERVICE_NAME, keychainKey(row.id, 'apiKey'));
+    let models: string[] = [];
+    try {
+      models = JSON.parse(row.models_json || '[]');
+    } catch {
+      models = [];
+    }
     result.push({
       id: row.id,
       name: row.name,
       baseUrl: row.base_url,
       enabled: row.enabled === 1,
       configured: !!apiKey,
-      models: JSON.parse(row.models_json || '[]'),
+      models,
     });
   }
   return result;
@@ -81,7 +87,10 @@ register('settings.apiKey:get', async (opts: { providerId: string }) => {
 });
 
 register('settings.apiKey:set', async (opts: { providerId: string; apiKey: string }) => {
-  await keytar.setPassword(SERVICE_NAME, keychainKey(opts.providerId, 'apiKey'), opts.apiKey);
+  if (!opts.apiKey || !opts.apiKey.trim()) {
+    throw new Error('API key cannot be empty');
+  }
+  await keytar.setPassword(SERVICE_NAME, keychainKey(opts.providerId, 'apiKey'), opts.apiKey.trim());
 });
 
 register('settings.apiKey:delete', async (opts: { providerId: string }) => {
