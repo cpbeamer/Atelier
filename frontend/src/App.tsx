@@ -4,6 +4,7 @@ import { Sidebar } from './components/Sidebar';
 import { TerminalGrid, TerminalPaneConfig } from './components/TerminalGrid';
 import { MilestoneInbox } from './components/MilestoneInbox';
 import { WorkflowGraph } from './components/WorkflowGraph';
+import { SettingsModal } from './components/SettingsModal';
 import type { Project } from './lib/db';
 
 function App() {
@@ -11,6 +12,7 @@ function App() {
   const [activeRun, setActiveRun] = useState<string | null>(null);
   const [panes, setPanes] = useState<TerminalPaneConfig[]>([]);
   const [showInbox, setShowInbox] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [workflowActive, setWorkflowActive] = useState(false);
 
   const handleWorkflowSelect = useCallback((_workflow: { name: string; language: string }) => {
@@ -42,6 +44,7 @@ function App() {
         activeProject={activeProject}
         onProjectSelect={setActiveProject}
         onWorkflowSelect={handleWorkflowSelect}
+        onSettingsClick={() => setShowSettings(true)}
       />
 
       <div className="flex-1 flex flex-col bg-background">
@@ -78,6 +81,7 @@ function App() {
       </div>
 
       <MilestoneInbox isOpen={showInbox} onClose={() => setShowInbox(false)} />
+      <SettingsModal isOpen={showSettings} onClose={() => setShowSettings(false)} />
     </div>
   );
 }

@@ -6,10 +6,11 @@ import type { Project } from '../lib/db';
 interface Props {
   onProjectSelect?: (project: Project) => void;
   onWorkflowSelect?: (workflow: { name: string; language: 'typescript' | 'python' }) => void;
+  onSettingsClick?: () => void;
   activeProject?: Project | null;
 }
 
-export function Sidebar({ onProjectSelect, onWorkflowSelect, activeProject }: Props) {
+export function Sidebar({ onProjectSelect, onWorkflowSelect, onSettingsClick, activeProject }: Props) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [workflows, setWorkflows] = useState<Array<{ name: string; language: 'typescript' | 'python' }>>([]);
 
@@ -54,7 +55,7 @@ export function Sidebar({ onProjectSelect, onWorkflowSelect, activeProject }: Pr
   }
 
   function handleSettingsClick() {
-    alert('Settings panel coming soon');
+    onSettingsClick?.();
   }
 
   return (
