@@ -21,82 +21,86 @@ export interface PipelineOutput {
 export async function featurePipeline(input: PipelineInput): Promise<PipelineOutput> {
   const { signal } = input;
 
-  // Phase 1: Parallel Research
-  console.log('Phase 1: Starting parallel research...');
-  const [researchA, researchB] = await Promise.all([
-    executeChild<AgentChildInput, string>('agentChild', {
+  try {
+    // Phase 1: Parallel Research
+    console.log('Phase 1: Starting parallel research...');
+    const [researchA, researchB] = await Promise.all([
+      executeChild<AgentChildInput, string>('agentChild', {
+        args: [{
+          agentName: 'Researcher A',
+          persona: 'researcher-a',
+          task: signal,
+        }],
+      }),
+      executeChild<AgentChildInput, string>('agentChild', {
+        args: [{
+          agentName: 'Researcher B',
+          persona: 'researcher-b',
+          task: signal,
+        }],
+      }),
+    ]);
+    console.log('Phase 1: Research complete');
+
+    // Phase 2: Synthesis
+    console.log('Phase 2: Starting synthesis...');
+    const synthesis = await executeChild<AgentChildInput, string>('agentChild', {
       args: [{
-        agentName: 'Researcher A',
-        persona: 'researcher-a',
+        agentName: 'Synthesizer',
+        persona: 'synthesizer',
         task: signal,
+        context: {
+          'Researcher A': researchA,
+          'Researcher B': researchB,
+        },
       }],
-    }),
-    executeChild<AgentChildInput, string>('agentChild', {
+    });
+    console.log('Phase 2: Synthesis complete');
+
+    // Phase 3: Milestone - Review Synthesis
+    const decision1 = await createMilestone('Review Synthesis', { synthesis });
+    if (decision1.verdict !== 'Approved') {
+      return { status: 'rejected', phase: 'synthesis' };
+    }
+
+    // Phase 4: Architecture
+    console.log('Phase 4: Starting architecture...');
+    const design = await executeChild<AgentChildInput, string>('agentChild', {
       args: [{
-        agentName: 'Researcher B',
-        persona: 'researcher-b',
+        agentName: 'Architect',
+        persona: 'architect',
         task: signal,
+        context: { synthesis },
       }],
-    }),
-  ]);
-  console.log('Phase 1: Research complete');
+    });
+    console.log('Phase 4: Architecture complete');
 
-  // Phase 2: Synthesis
-  console.log('Phase 2: Starting synthesis...');
-  const synthesis = await executeChild<AgentChildInput, string>('agentChild', {
-    args: [{
-      agentName: 'Synthesizer',
-      persona: 'synthesizer',
-      task: signal,
-      context: {
-        'Researcher A': researchA,
-        'Researcher B': researchB,
-      },
-    }],
-  });
-  console.log('Phase 2: Synthesis complete');
+    // Phase 5: Milestone - Approve Design
+    const decision2 = await createMilestone('Approve Design', { design });
+    if (decision2.verdict !== 'Approved') {
+      return { status: 'rejected', phase: 'design' };
+    }
 
-  // Phase 3: Milestone - Review Synthesis
-  const decision1 = await createMilestone('Review Synthesis', { synthesis });
-  if (decision1.verdict !== 'Approved') {
-    return { status: 'rejected', phase: 'synthesis' };
+    // Phase 6: Implementation
+    console.log('Phase 6: Starting code writing...');
+    const code = await executeChild<AgentChildInput, string>('agentChild', {
+      args: [{
+        agentName: 'Code Writer',
+        persona: 'code-writer',
+        task: signal,
+        context: { design },
+      }],
+    });
+    console.log('Phase 6: Code writing complete');
+
+    // Phase 7: Milestone - Review Implementation
+    const decision3 = await createMilestone('Review Implementation', { code });
+    if (decision3.verdict !== 'Approved') {
+      return { status: 'rejected', phase: 'implementation' };
+    }
+
+    return { status: 'completed', code };
+  } catch (e) {
+    return { status: 'rejected', phase: 'research', error: String(e) };
   }
-
-  // Phase 4: Architecture
-  console.log('Phase 4: Starting architecture...');
-  const design = await executeChild<AgentChildInput, string>('agentChild', {
-    args: [{
-      agentName: 'Architect',
-      persona: 'architect',
-      task: signal,
-      context: { synthesis },
-    }],
-  });
-  console.log('Phase 4: Architecture complete');
-
-  // Phase 5: Milestone - Approve Design
-  const decision2 = await createMilestone('Approve Design', { design });
-  if (decision2.verdict !== 'Approved') {
-    return { status: 'rejected', phase: 'design' };
-  }
-
-  // Phase 6: Implementation
-  console.log('Phase 6: Starting code writing...');
-  const code = await executeChild<AgentChildInput, string>('agentChild', {
-    args: [{
-      agentName: 'Code Writer',
-      persona: 'code-writer',
-      task: signal,
-      context: { design },
-    }],
-  });
-  console.log('Phase 6: Code writing complete');
-
-  // Phase 7: Milestone - Review Implementation
-  const decision3 = await createMilestone('Review Implementation', { code });
-  if (decision3.verdict !== 'Approved') {
-    return { status: 'rejected', phase: 'implementation' };
-  }
-
-  return { status: 'completed', code };
 }
