@@ -22,5 +22,10 @@
     "electron": "^34.0.0",
     "electron-builder": "^25.1.8",
     "wait-on": "^8.0.1"
+  },
+  "dependencies": {
+    "@types/react-grid-layout": "^2.1.0",
+    "react-grid-layout": "^2.2.3",
+    "ws": "^8.20.0"
   }
 }
