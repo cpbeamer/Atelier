@@ -83,15 +83,11 @@ Atelier is that product.
 4. **Three-line setup per project.** Open project → pick a workflow template → click Run.
 5. **Adversarial-by-default.** Every specialist agent has a counterpart validator built into the workflow primitives. No proposal reaches you without being torn apart first.
 6. **Schedules that actually work.** Cron-like triggers via Temporal Schedules — survives restarts, idempotent, observable.
-7. **Permission-free agents, sandbox-safe.** `--dangerously-skip-permissions` is enabled by default — but every agent runs inside an isolated git worktree, so worst case the worktree gets nuked and your main branch is untouched.
-
----
-
-## 6. Architecture
+7. **Permission-free agents, sandbox-safe.** `--dangerously-skip-permissions` is enabled by default — but every agent runs inside an isolated git worktree, so worst case the worktree gets nuked and your m## 6. Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ Atelier Desktop App (Tauri 2 — Rust core + React frontend)              │
+│ Atelier Desktop App (Electron — Node.js main + React renderer)          │
 │                                                                            │
 │ ┌──────────────────────────────────────────────────────────────────────┐ │
 │ │ Frontend (React + TypeScript + xterm.js + Tailwind)                   │ │
@@ -100,28 +96,44 @@ Atelier is that product.
 │ │  - Inbox:      pending milestones, escalations                        │ │
 │ │  - Settings:   LLM providers, secrets, schedules                      │ │
 │ └──────────────────────────────────────────────────────────────────────┘ │
-│                                  ↕ Tauri IPC                               │
+│                                  ↕ Electron IPC / WebSocket                │
 │ ┌──────────────────────────────────────────────────────────────────────┐ │
-│ │ Tauri Core (Rust)                                                      │ │
+│ │ Bun Orchestrator (Backend)                                             │ │
 │ │  - Process spawning (incl. WSL on Windows)                             │ │
-│ │  - PTY management (portable-pty crate)                                 │ │
+│ │  - PTY management (node-pty)                                           │ │
 │ │  - File system access (project root, .atelier/ config)               │ │
-│ │  - Secrets storage (OS keychain: Win Credential Mgr / Keychain)        │ │
-│ │  - Sidecar lifecycle: starts/stops Bun worker + Temporal stack         │ │
-│ │  - Native menubar, notifications, deep links                            │ │
+│ │  - Secrets storage (OS keychain via node-keytar)                       │ │
+│ │  - Sidecar lifecycle: starts/stops Temporal stack                      │ │
+│ │  - Workflow registration and activity dispatching                      │ │
 │ └──────────────────────────────────────────────────────────────────────┘ │
 │                                  ↕                                         │
 │ ┌──────────────────────────────────────────────────────────────────────┐ │
-│ │ Sidecar Processes (lifecycle managed by Tauri)                        │ │
+│ │ Sidecar Processes (lifecycle managed by Bun)                          │ │
 │ │                                                                        │ │
-│ │ ┌──────────────────────────┐  ┌────────────────────────────────────┐ │ │
-│ │ │ Temporal stack (Docker)   │  │ Bun Worker (TypeScript)            │ │ │
-│ │ │  - postgres :5466         │  │  - Connects to Temporal :7466      │ │ │
-│ │ │  - temporal :7466 gRPC    │←→│  - Registers workflows from        │ │ │
-│ │ │  - temporal-ui :8466 web  │  │    .atelier/workflows/           │ │ │
-│ │ │   (all 127.0.0.1)         │  │  - Activities: spawn agent,         │ │ │
-│ │ │                            │  │    LLM call, git ops, milestone     │ │ │
-│ │ └──────────────────────────┘  │  - Per-project task queue           │ │ │
+│ │ ┌──────────────────────────┐                                           │ │
+│ │ │ Temporal stack (Binary)   │                                           │ │
+│ │ │  - temporal :7466 gRPC    │←──────────────────────────────────────┐  │ │
+│ │ │  - temporal-ui :8466 web  │                                       │  │ │
+│ │ │   (SQLite-backed)         │                                       │  │ │
+│ │ └──────────────────────────┘                                       │  │ │
+│ │                                                                    │  │ │
+│ │ ┌──────────────────────────────────────────────────────────────────┴┐ │ │
+│ │ │ Agent Processes (one per active agent in a workflow)              │ │ │
+│ │ │                                                                    │ │ │
+│ │ │ Type A — Claude Code Terminal Agents (visible):                   │ │ │
+│ │ │   wsl claude --dangerously-skip-permissions                        │ │ │
+│ │ │     -p "<persona> + <task>"                                        │ │ │
+│ │ │   PTY (node-pty) → streamed to xterm.js pane in UI                 │ │ │
+│ │ │   Workdir = git worktree under project                             │ │ │
+│ │ │                                                                    │ │ │
+│ │ │ Type B — Direct LLM Agents (background):                          │ │ │
+│ │ │   In-process call to provider (MiniMax / OpenAI / Anthropic SDK)  │ │ │
+│ │ │   Output → log pane, no PTY                                        │ │ │
+│ │ └──────────────────────────────────────────────────────────────────┘ │ │
+│ └──────────────────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+t task queue           │ │ │
 │ │                                 └────────────────────────────────────┘ │ │
 │ │                                                                        │ │
 │ │ ┌──────────────────────────────────────────────────────────────────┐ │ │
@@ -167,18 +179,19 @@ Atelier is that product.
 
 | Layer | Choice | Rationale |
 |---|---|---|
-| **Desktop framework** | Tauri 2 | ~10 MB app vs Electron's ~150 MB; Rust core is fast + memory-safe; first-class Linux/Mac/Win cross-compile; secure-by-default IPC; production-ready in 2025 |
-| **Frontend** | React 19 + TypeScript + Vite | User's existing skillset (Strata uses React); largest ecosystem |
-| **UI components** | shadcn/ui + Tailwind CSS 4 | Consistent with modern stack; copy-paste components; matches Strata's stack |
-| **Terminal rendering** | xterm.js + xterm-addon-fit + xterm-addon-web-links | Industry standard (used by VS Code); ANSI colors; clickable links |
-| **PTY** | portable-pty (Rust crate) | Cross-platform; integrates with Tauri's sidecar pattern; supports WSL pseudo-tty |
-| **Workflow engine** | Temporal 1.25 server (single binary, embedded dev mode) | Durable workflows; signals; schedules; battle-tested. Bundled via the official `temporal` CLI's `server start-dev` command — single ~80MB binary, SQLite-backed by default, no Docker required. (See Section 13.4.) |
-| **TS worker runtime** | Bun + @temporalio/worker (^1.11) | Fast startup; user's stack; easy npm install |
-| **Python worker runtime** | uv-managed venv + temporalio (Python SDK ^1.8) | Per-project isolated venv; uv resolves deps in seconds; first-class Temporal Python SDK |
-| **Local DB** | SQLite via better-sqlite3 (or Tauri's tauri-plugin-sql) | Zero-config; embedded; sufficient for single-user state |
-| **Secrets storage** | Tauri Stronghold + OS keychain | Industry-standard secrets management; per-OS native vault |
-| **LLM SDK** | openai (OpenAI-compatible base URL) + @anthropic-ai/sdk | Covers MiniMax, OpenRouter, OpenAI, Together, etc. via base-URL switching; native Claude path for Code Writer |
-| **WSL invocation** | `wsl.exe -d <distro> -- bash -c "..."` via Tauri's Command API | Native Windows invocation; supports distro selection |
+| **Desktop framework** | **Electron** | Unified Node.js environment; matches `AW_Analyst` pattern; no Rust compiler required |
+| **Backend Orchestrator** | **Bun** | Ultra-fast JS runtime; built-in shell/process APIs; unified with workflow language |
+| **Frontend** | React 19 + TypeScript + Vite | User's existing skillset; largest ecosystem |
+| **UI components** | shadcn/ui + Tailwind CSS 4 | Consistent with modern stack; copy-paste components |
+| **Terminal rendering** | xterm.js + xterm-addon-fit + xterm-addon-web-links | Industry standard; ANSI colors; clickable links |
+| **PTY** | **node-pty** | Industry standard for Node; powers VS Code's terminal |
+| **Workflow engine** | Temporal 1.25 server (single binary, embedded dev mode) | Durable workflows; signals; schedules; battle-tested. Bundled via the official `temporal` CLI. |
+| **TS worker runtime** | Bun + @temporalio/worker (^1.11) | Fast startup; unified with orchestrator |
+| **Python worker runtime** | uv-managed venv + temporalio (Python SDK ^1.8) | Per-project isolated venv; uv resolves deps in seconds |
+| **Local DB** | SQLite via better-sqlite3 | Zero-config; embedded; sufficient for single-user state |
+| **Secrets storage** | **node-keytar** | Access to OS keychain (Win Credential Mgr / Keychain) |
+| **LLM SDK** | openai + @anthropic-ai/sdk | Covers MiniMax, OpenRouter, OpenAI, etc. |
+| **WSL invocation** | `bun $` or `child_process.spawn` | Native Windows invocation via Bun's shell APIs |
 | **Telemetry** | None | Local-first product. Crash reports opt-in only. |
 
 ---
