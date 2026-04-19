@@ -2,6 +2,7 @@
 import { ptyManager } from './pty-manager.js';
 import { projects, runs, milestones } from './db.js';
 import { createWorktree, removeWorktree } from './worktree.js';
+import { startSidecar, stopSidecar, getSidecarStatus } from './sidecar-lifecycle.js';
 
 type RegisterFn = (name: string, handler: (opts: any) => Promise<void>) => void;
 const register: RegisterFn = (name, handler) => {
@@ -38,3 +39,7 @@ register('worktree.create', async (opts: { projectPath: string; projectSlug: str
 
 register('worktree.remove', async (opts: { worktreePath: string }) =>
   removeWorktree(opts.worktreePath));
+
+register('sidecar.status', async () => getSidecarStatus());
+register('sidecar.start', async () => { await startSidecar(); });
+register('sidecar.stop', async () => { await stopSidecar(); });

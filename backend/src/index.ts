@@ -3,6 +3,7 @@ import path from 'node:path';
 import { WebSocketServer } from 'ws';
 import fs from 'node:fs';
 import { ptyManager } from './pty-manager.js';
+import { startSidecar } from './sidecar-lifecycle.js';
 
 const PORT = 3000;
 const BINARIES_DIR = path.join(process.cwd(), '..', 'binaries');
@@ -109,6 +110,9 @@ wss.on('connection', (ws) => {
 });
 
 console.log(`Bun Orchestrator running on ws://localhost:${PORT}`);
+
+// Start Temporal sidecar
+startSidecar().catch(console.error);
 
 process.on('SIGINT', () => {
   temporalProcess.kill();
