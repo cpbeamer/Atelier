@@ -3,6 +3,7 @@ import { projects, runs, milestones, modelConfig } from './db.js';
 import { ptyManager } from './pty-manager.js';
 import { createWorktree, removeWorktree } from './worktree.js';
 import { startSidecar, stopSidecar, getSidecarStatus } from './sidecar-lifecycle.js';
+import { createMilestone, resolveMilestone, getPendingMilestones } from './milestone-service.js';
 import keytar from 'node-keytar';
 
 const SERVICE_NAME = 'Atelier';
@@ -42,7 +43,13 @@ register('db.addProject', async (opts: { id: string; name: string; path: string 
   projects.insert(opts.id, opts.name, opts.path, now, now);
 });
 register('db.listRuns', async (opts: { projectId: string }) => runs.listByProject(opts.projectId));
-register('milestone.listPending', async () => milestones.listPending());
+register('milestone.listPending', async () => getPendingMilestones());
+register('milestone.create', async (opts: { runId: string; name: string; payload: unknown }) => {
+  return createMilestone(opts.runId, opts.name, opts.payload);
+});
+register('milestone.resolve', async (opts: { id: string; verdict: string; reason?: string }) => {
+  await resolveMilestone(opts.id, opts.verdict as 'Approved' | 'Rejected', opts.reason);
+});
 
 register('worktree.create', async (opts: { projectPath: string; projectSlug: string; runId: string }) =>
   createWorktree(opts.projectPath, opts.projectSlug, opts.runId));
