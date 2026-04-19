@@ -8,13 +8,34 @@ function getWs(): WebSocket {
   if (!ws || ws.readyState === WebSocket.CLOSED) {
     ws = new WebSocket('ws://localhost:3000');
     ws.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
+      let msg;
+      try {
+        msg = JSON.parse(event.data);
+      } catch {
+        return; // Ignore malformed JSON
+      }
       if (msg.id && pending.has(msg.id)) {
         const { resolve, reject } = pending.get(msg.id)!;
         pending.delete(msg.id);
         if (msg.error) reject(new Error(msg.error));
         else resolve(msg.payload);
       }
+    };
+    ws.onerror = () => {
+      // Reject all pending on error
+      for (const [id, { reject }] of pending) {
+        reject(new Error('WebSocket error'));
+      }
+      pending.clear();
+      ws = null;
+    };
+    ws.onclose = () => {
+      // Reject all pending on close
+      for (const [id, { reject }] of pending) {
+        reject(new Error('WebSocket closed'));
+      }
+      pending.clear();
+      ws = null;
     };
   }
   return ws;
