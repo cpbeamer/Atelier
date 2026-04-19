@@ -117,3 +117,11 @@ register('settings.apiKey:set', async (opts: { providerId: string; apiKey: strin
 register('settings.apiKey:delete', async (opts: { providerId: string }) => {
   await keytar.deletePassword(SERVICE_NAME, keychainKey(opts.providerId, 'apiKey'));
 });
+
+// Workflow handler
+register('workflow.start', async (opts: { name: string; input: any }) => {
+  const runId = `run-${Date.now()}`;
+  console.log(`Starting workflow ${opts.name} with input:`, opts.input);
+  // In production, this would start a Temporal workflow
+  return { runId };
+});

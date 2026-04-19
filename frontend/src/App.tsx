@@ -6,6 +6,7 @@ import { MilestoneInbox } from './components/MilestoneInbox';
 import { WorkflowGraph } from './components/WorkflowGraph';
 import { SettingsModal } from './components/SettingsModal';
 import type { Project } from './lib/db';
+import { invoke } from './lib/ipc';
 
 function App() {
   const [activeProject, setActiveProject] = useState<Project | null>(null);
@@ -15,9 +16,13 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [workflowActive, setWorkflowActive] = useState(false);
 
-  const handleWorkflowSelect = useCallback((_workflow: { name: string; language: string }) => {
+  const handleWorkflowSelect = useCallback(async (workflow: { name: string; language: string }) => {
+    const { runId } = await invoke<{ runId: string }>('workflow.start', {
+      name: workflow.name,
+      input: { language: workflow.language },
+    });
     setWorkflowActive(true);
-    setActiveRun(`run-${Date.now()}`);
+    setActiveRun(runId);
     setPanes([
       { id: 'agent-1', agentName: 'PM Specialist', agentType: 'terminal', status: 'running' },
       { id: 'agent-2', agentName: 'PM Validator', agentType: 'terminal', status: 'running' },
