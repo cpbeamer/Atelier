@@ -1,6 +1,7 @@
 // backend/src/ipc-handlers.ts
 import { ptyManager } from './pty-manager.js';
 import { projects, runs, milestones } from './db.js';
+import { createWorktree, removeWorktree } from './worktree.js';
 
 type RegisterFn = (name: string, handler: (opts: any) => Promise<void>) => void;
 const register: RegisterFn = (name, handler) => {
@@ -31,3 +32,9 @@ register('db.addProject', async (opts: { id: string; name: string; path: string 
 });
 register('db.listRuns', async (opts: { projectId: string }) => runs.listByProject(opts.projectId));
 register('milestone.listPending', async () => milestones.listPending());
+
+register('worktree.create', async (opts: { projectPath: string; projectSlug: string; runId: string }) =>
+  createWorktree(opts.projectPath, opts.projectSlug, opts.runId));
+
+register('worktree.remove', async (opts: { worktreePath: string }) =>
+  removeWorktree(opts.worktreePath));
