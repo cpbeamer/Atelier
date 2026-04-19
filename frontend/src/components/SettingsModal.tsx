@@ -45,21 +45,28 @@ export function SettingsModal({ isOpen, onClose }: Props) {
       p.id === id ? { ...p, enabled: !p.enabled } : p
     );
     setProviders(updated);
-    const p = updated.find(x => x.id === id)!;
+    const p = updated.find(x => x.id === id);
+    if (!p) return;
     await invoke('settings.modelConfig:set', { id, enabled: p.enabled, models: p.models });
   }
 
   async function handleModelSelect(providerId: string, model: string) {
-    const p = providers.find(x => x.id === providerId)!;
+    const p = providers.find(x => x.id === providerId);
+    if (!p) return;
     await invoke('settings.modelConfig:set', { id: providerId, enabled: p.enabled, models: [model] });
     setProviders(prev => prev.map(x => x.id === providerId ? { ...x, models: [model] } : x));
   }
 
   async function handleSaveApiKey() {
     if (!apiKeyInput) return;
-    await invoke('settings.apiKey:set', { providerId: apiKeyInput.providerId, apiKey: apiKeyInput.value });
-    setApiKeyInput(null);
-    await loadConfig();
+    try {
+      await invoke('settings.apiKey:set', { providerId: apiKeyInput.providerId, apiKey: apiKeyInput.value });
+      setApiKeyInput(null);
+      await loadConfig();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to save API key');
+      setApiKeyInput(null);
+    }
   }
 
   if (!isOpen) return null;
@@ -130,7 +137,7 @@ export function SettingsModal({ isOpen, onClose }: Props) {
                       autoComplete="off"
                       placeholder="Enter API key"
                       value={apiKeyInput.value}
-                      onChange={(e) => setApiKeyInput({ ...apiKeyInput, value: e.target.value })}
+                      onChange={(e) => setApiKeyInput(prev => prev ? { ...prev, value: e.target.value } : null)}
                       className="w-full bg-background border border-border rounded px-2 py-1.5 text-sm mb-2"
                     />
                     <div className="flex gap-2">
