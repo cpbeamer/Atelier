@@ -20,10 +20,12 @@ export interface PipelineOutput {
 
 export async function featurePipeline(input: PipelineInput): Promise<PipelineOutput> {
   const { signal } = input;
+  let currentPhase = 'research';
 
   try {
     // Phase 1: Parallel Research
     console.log('Phase 1: Starting parallel research...');
+    currentPhase = 'research';
     const [researchA, researchB] = await Promise.all([
       executeChild<AgentChildInput, string>('agentChild', {
         args: [{
@@ -44,6 +46,7 @@ export async function featurePipeline(input: PipelineInput): Promise<PipelineOut
 
     // Phase 2: Synthesis
     console.log('Phase 2: Starting synthesis...');
+    currentPhase = 'synthesis';
     const synthesis = await executeChild<AgentChildInput, string>('agentChild', {
       args: [{
         agentName: 'Synthesizer',
@@ -65,6 +68,7 @@ export async function featurePipeline(input: PipelineInput): Promise<PipelineOut
 
     // Phase 4: Architecture
     console.log('Phase 4: Starting architecture...');
+    currentPhase = 'architecture';
     const design = await executeChild<AgentChildInput, string>('agentChild', {
       args: [{
         agentName: 'Architect',
@@ -83,6 +87,7 @@ export async function featurePipeline(input: PipelineInput): Promise<PipelineOut
 
     // Phase 6: Implementation
     console.log('Phase 6: Starting code writing...');
+    currentPhase = 'implementation';
     const code = await executeChild<AgentChildInput, string>('agentChild', {
       args: [{
         agentName: 'Code Writer',
@@ -101,6 +106,6 @@ export async function featurePipeline(input: PipelineInput): Promise<PipelineOut
 
     return { status: 'completed', code };
   } catch (e) {
-    return { status: 'rejected', phase: 'research', error: String(e) };
+    return { status: 'rejected', phase: currentPhase, error: String(e) };
   }
 }
