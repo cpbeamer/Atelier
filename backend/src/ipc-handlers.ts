@@ -5,7 +5,7 @@ import { createWorktree, removeWorktree } from './worktree.js';
 import { startSidecar, stopSidecar, getSidecarStatus } from './sidecar-lifecycle.js';
 import { createMilestone, resolveMilestone, getPendingMilestones } from './milestone-service.js';
 import keytar from 'keytar';
-import { Client } from '@temporalio/client';
+import { Client, Connection } from '@temporalio/client';
 
 const SERVICE_NAME = 'Atelier';
 const KEYCHAIN_PREFIX = 'atelier.provider.';
@@ -121,8 +121,9 @@ register('settings.apiKey:delete', async (opts: { providerId: string }) => {
 
 // Workflow handler
 register('workflow.start', async (opts: { name: string; input: any }) => {
-  const client = await Client.connect('127.0.0.1:7466');
-  const handle = await client.start('featurePipeline', {
+  const connection = await Connection.connect({ address: '127.0.0.1:7466' });
+  const client = new Client({ connection });
+  const handle = await client.workflow.start('featurePipeline', {
     args: [opts.input],
     taskQueue: 'atelier-default-ts',
     workflowId: `run-${Date.now()}`,
