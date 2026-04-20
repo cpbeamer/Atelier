@@ -122,6 +122,33 @@ export interface AgentCompletion {
   output?: string;
 }
 
+import fs from 'node:fs';
+import path from 'node:path';
+
+async function readFile(filePath: string): Promise<string> {
+  return fs.promises.readFile(filePath, 'utf-8');
+}
+
+async function listDir(dirPath: string): Promise<string[]> {
+  try {
+    const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
+    return entries.map(e => e.name);
+  } catch {
+    return [];
+  }
+}
+
+async function loadPersona(projectPath: string, personaKey: string): Promise<string> {
+  const personaPath = path.join(projectPath, '.atelier', 'agents', `${personaKey}.md`);
+  try {
+    return await fs.promises.readFile(personaPath, 'utf-8');
+  } catch {
+    // Fall back to bundled persona
+    const bundledPath = path.join(process.cwd(), 'src', '.atelier', 'agents', `${personaKey}.md`);
+    return fs.promises.readFile(bundledPath, 'utf-8');
+  }
+}
+
 export async function callMiniMax(system: string, user: string): Promise<string> {
   // Get API key from env var or backend
   let apiKey = process.env.MINIMAX_API_KEY;
@@ -239,21 +266,105 @@ export async function scopeArchitecture(input: ScopeInput): Promise<ScopeOutput>
 }
 
 export async function implementCode(input: ImplementInput): Promise<ImplementOutput> {
-  // TODO: Call Developer terminal agent
+  const { ticket, worktreePath, projectPath, feedback, testFeedback } = input;
+
+  const persona = await loadPersona(projectPath, 'developer');
+
+  let prompt = `
+Ticket: ${ticket.title}
+${ticket.description}
+
+Technical plan:
+${ticket.technicalPlan}
+
+Files to change: ${ticket.filesToChange.join(', ')}
+
+Worktree: ${worktreePath}
+`;
+
+  if (feedback && feedback.length > 0) {
+    prompt += `\n\nCODE REVIEW FEEDBACK to address:
+${feedback.join('\n')}\n`;
+  }
+
+  if (testFeedback && testFeedback.length > 0) {
+    prompt += `\n\nTEST FAILURES to fix:
+${testFeedback.join('\n')}\n`;
+  }
+
+  const result = await callMiniMax(persona, prompt);
+
+  // Developer outputs the actual code changes - parse and apply them
+  // For now, return the LLM output as code
   return {
-    code: 'stub: implementation code',
-    filesChanged: input.ticket.filesToChange,
+    code: result,
+    filesChanged: ticket.filesToChange,
   };
 }
 
 export async function reviewCode(input: ReviewInput): Promise<ReviewResult> {
-  // TODO: Call Code Reviewer terminal agent
-  return { approved: true, comments: [] };
+  const { implementation, ticket } = input;
+
+  const persona = await loadPersona(process.cwd(), 'code-reviewer');
+
+  const prompt = `
+Review this code for ticket: ${ticket.title}
+
+CODE:
+\`\`\`
+${implementation.code}
+\`\`\`
+
+ACCEPTANCE CRITERIA:
+${ticket.acceptanceCriteria.map(c => `- ${c}`).join('\n')}
+
+FILES CHANGED: ${implementation.filesChanged.join(', ')}
+
+Review against the criteria. Return JSON:
+{ "approved": true/false, "comments": ["specific comment 1", "specific comment 2"] }
+`;
+
+  const result = await callMiniMax(persona, prompt);
+
+  try {
+    return JSON.parse(result);
+  } catch {
+    return { approved: false, comments: ['Could not parse review output'] };
+  }
 }
 
 export async function testCode(input: TestInput): Promise<TestResult> {
-  // TODO: Call Tester terminal agent
-  return { allPassed: true, failures: [] };
+  const { implementation, ticket } = input;
+
+  const persona = await loadPersona(process.cwd(), 'tester');
+
+  const prompt = `
+Test this implementation for ticket: ${ticket.title}
+
+CODE:
+\`\`\`
+${implementation.code}
+\`\`\`
+
+ACCEPTANCE CRITERIA:
+${ticket.acceptanceCriteria.map(c => `- ${c}`).join('\n')}
+
+FILES: ${implementation.filesChanged.join(', ')}
+
+Write and run tests to verify each acceptance criterion.
+Report pass/fail for each criterion.
+
+Return JSON:
+{ "allPassed": true/false, "failures": ["criterion that failed", ...] }
+`;
+
+  const result = await callMiniMax(persona, prompt);
+
+  try {
+    return JSON.parse(result);
+  } catch {
+    return { allPassed: false, failures: ['Could not parse test output'] };
+  }
 }
 
 export async function pushChanges(input: PushInput): Promise<PushResult> {
