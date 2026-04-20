@@ -156,3 +156,20 @@ register('autopilot.start', async (opts: { projectPath: string; projectSlug: str
 
   return { runId, workflowId: handle.workflowId };
 });
+
+register('greenfield.start', async (opts: { projectPath: string; projectSlug: string; userRequest: string }) => {
+  const connection = await Connection.connect({ address: '127.0.0.1:7466' });
+  const client = new Client({ connection });
+  const runId = `greenfield-${Date.now()}`;
+  const handle = await client.workflow.start('greenfield', {
+    args: [{
+      projectPath: opts.projectPath,
+      projectSlug: opts.projectSlug,
+      runId,
+      userRequest: opts.userRequest,
+    }],
+    taskQueue: 'atelier-default-ts',
+    workflowId: `greenfield-${opts.projectSlug}-${runId}`,
+  });
+  return { runId, workflowId: handle.workflowId };
+});
