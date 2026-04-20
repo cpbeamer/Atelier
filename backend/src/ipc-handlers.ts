@@ -6,6 +6,7 @@ import { startSidecar, stopSidecar, getSidecarStatus } from './sidecar-lifecycle
 import { createMilestone, resolveMilestone, getPendingMilestones } from './milestone-service.js';
 import keytar from 'keytar';
 import { Client, Connection } from '@temporalio/client';
+import path from 'node:path';
 
 const SERVICE_NAME = 'Atelier';
 const KEYCHAIN_PREFIX = 'atelier.provider.';
@@ -36,6 +37,24 @@ register('pty.resize', async (opts: { id: string; cols: number; rows: number }) 
 });
 register('pty.kill', async (opts: { id: string }) => {
   ptyManager.kill(opts.id);
+});
+register('pty.spawnAgent', async (opts: { id: string; agentName: string; persona: string; task: string; cwd?: string }) => {
+  const { id, agentName, persona, task, cwd } = opts;
+
+  // Build the Claude Code command
+  const personaPath = path.join(process.cwd(), 'src', '.atelier', 'agents', `${persona}.md`);
+  const personaContent = await Bun.file(personaPath).text();
+  const fullPrompt = `${personaContent}\n\n---\n\n${task}`;
+
+  // Spawn Claude Code in the PTY
+  const shell = process.platform === 'win32' ? 'wsl.exe' : '/bin/bash';
+  const shellArgs = process.platform === 'win32'
+    ? ['-d', 'Ubuntu', '--', 'bash', '-c', `claude --dangerously-skip-permissions -p "${fullPrompt.replace(/"/g, '\\"')}"`]
+    : ['-c', `claude --dangerously-skip-permissions -p "${fullPrompt.replace(/"/g, '\\"')}"`];
+
+  ptyManager.spawn(id, shell, shellArgs, cwd);
+
+  return { spawned: true, ptyId: id };
 });
 
 register('db.listProjects', async () => projects.list());
