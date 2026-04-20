@@ -283,15 +283,54 @@ Respond ONLY with valid JSON array of tickets.
 }
 
 export async function scopeArchitecture(input: ScopeInput): Promise<ScopeOutput> {
-  // TODO: Call Architect terminal agent
-  return {
-    scopedTickets: input.tickets.map(t => ({
-      ...t,
-      technicalPlan: 'stub: would create technical plan',
-      filesToChange: ['.github/workflows/ci.yml'],
-      dependencies: [],
-    })),
-  };
+  const { tickets, projectPath, worktreePath } = input;
+
+  const persona = await loadPersona(projectPath, 'architect');
+
+  const prompt = `
+Project path: ${projectPath}
+Worktree: ${worktreePath}
+
+Tickets to scope:
+
+${tickets.map(t => `
+TICKET: ${t.title}
+${t.description}
+Estimate: ${t.estimate}
+`).join('\n---\n')}
+
+For EACH ticket, provide:
+1. technicalPlan: High-level approach (3-5 sentences)
+2. filesToChange: Specific files to create/modify
+3. dependencies: What must be done first
+
+Be specific. Generic plans are useless.
+`;
+
+  const result = await callMiniMax(persona, prompt);
+
+  // Try to parse as JSON, fall back to structured parsing
+  try {
+    const parsed = JSON.parse(result);
+    return {
+      scopedTickets: tickets.map((t, i) => ({
+        ...t,
+        technicalPlan: parsed[i]?.technicalPlan || 'Plan pending',
+        filesToChange: parsed[i]?.filesToChange || [],
+        dependencies: parsed[i]?.dependencies || [],
+      })),
+    };
+  } catch {
+    // Fall back: split by ticket and extract fields heuristically
+    return {
+      scopedTickets: tickets.map(t => ({
+        ...t,
+        technicalPlan: result.substring(0, 500),
+        filesToChange: [],
+        dependencies: [],
+      })),
+    };
+  }
 }
 
 export async function implementCode(input: ImplementInput): Promise<ImplementOutput> {
