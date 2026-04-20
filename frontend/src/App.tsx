@@ -20,6 +20,17 @@ const AUTOPILOT_PANES: TerminalPaneConfig[] = [
   { id: 'pusher', agentName: 'Pusher', agentType: 'direct-llm', status: 'waiting' },
 ];
 
+const AUTOPILOT_CONNECTIONS = [
+  { from: 'researcher', to: 'debate-a', type: 'signal' as const },
+  { from: 'researcher', to: 'debate-b', type: 'noise' as const },
+  { from: 'debate-a', to: 'architect', type: 'parent-child' as const },
+  { from: 'debate-b', to: 'architect', type: 'parent-child' as const },
+  { from: 'architect', to: 'developer', type: 'parent-child' as const },
+  { from: 'developer', to: 'reviewer', type: 'parent-child' as const },
+  { from: 'reviewer', to: 'tester', type: 'parent-child' as const },
+  { from: 'tester', to: 'pusher', type: 'parent-child' as const },
+];
+
 function App() {
   const [activeProject, setActiveProject] = useState<Project | null>(null);
   const [activeRun, setActiveRun] = useState<string | null>(null);
@@ -96,7 +107,7 @@ function App() {
         <div className="flex-1 flex overflow-hidden">
           <div className="flex-1">
             {workflowActive ? (
-              <TerminalGrid panes={panes} onPaneClose={handlePaneClose} onPaneAdd={handlePaneAdd} />
+              <TerminalGrid panes={panes} connections={AUTOPILOT_CONNECTIONS} onPaneClose={handlePaneClose} onPaneAdd={handlePaneAdd} />
             ) : (
               <div className="h-full flex items-center justify-center text-muted-foreground">
                 Select a workflow to run
