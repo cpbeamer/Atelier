@@ -149,6 +149,60 @@ async function loadPersona(projectPath: string, personaKey: string): Promise<str
   }
 }
 
+async function runTerminalAgentViaPty(
+  agentId: string,
+  agentName: string,
+  personaKey: string,
+  task: string,
+  cwd?: string
+): Promise<string> {
+  // Notify frontend to spawn the PTY
+  await fetch('http://localhost:3001/api/agent/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agentId, agentName, terminalType: 'terminal' }),
+  });
+
+  // Call backend to spawn PTY
+  const response = await fetch('http://localhost:3001/api/pty/spawn', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: agentId, persona: personaKey, task, cwd }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to spawn PTY: ${response.statusText}`);
+  }
+
+  // Wait for completion signal
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('PTY timeout')), 30 * 60 * 1000);
+
+    const poll = async () => {
+      try {
+        const status = await fetch(`http://localhost:3001/api/agent/${agentId}/status`);
+        if (status.ok) {
+          const result = await status.json();
+          if (result.status === 'completed') {
+            clearTimeout(timeout);
+            resolve(result.output || '');
+            return;
+          }
+          if (result.status === 'error') {
+            clearTimeout(timeout);
+            reject(new Error(result.error));
+            return;
+          }
+        }
+      } catch {
+        // Continue polling
+      }
+      setTimeout(poll, 2000);
+    };
+    poll();
+  });
+}
+
 export async function callMiniMax(system: string, user: string): Promise<string> {
   // Get API key from env var or backend
   let apiKey = process.env.MINIMAX_API_KEY;

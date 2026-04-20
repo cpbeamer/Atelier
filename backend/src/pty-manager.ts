@@ -78,6 +78,10 @@ class PtyManager {
     }
   }
 
+  isRunning(id: string): boolean {
+    return this.instances.has(id);
+  }
+
   killAll(): void {
     for (const [id] of this.instances) {
       this.kill(id);

@@ -243,6 +243,47 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // POST /api/pty/spawn
+  if (req.method === 'POST' && url.pathname === '/api/pty/spawn') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', async () => {
+      try {
+        const { id, persona, task, cwd } = JSON.parse(body);
+        const personaPath = path.join(process.cwd(), 'src', '.atelier', 'agents', `${persona}.md`);
+        const personaContent = fs.readFileSync(personaPath, 'utf-8');
+        const fullPrompt = `${personaContent}\n\n---\n\n${task}`;
+
+        const shell = process.platform === 'win32' ? 'wsl.exe' : '/bin/bash';
+        const shellArgs = process.platform === 'win32'
+          ? ['-d', 'Ubuntu', '--', 'bash', '-c', `claude --dangerously-skip-permissions -p "${fullPrompt.replace(/"/g, '\\"')}"`]
+          : ['-c', `claude --dangerously-skip-permissions -p "${fullPrompt.replace(/"/g, '\\"')}"`];
+
+        ptyManager.spawn(id, shell, shellArgs, cwd);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ spawned: true, ptyId: id }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+    });
+    return;
+  }
+
+  // GET /api/agent/:agentId/status
+  if (req.method === 'GET' && url.pathname.startsWith('/api/agent/') && url.pathname.endsWith('/status')) {
+    const agentId = url.pathname.split('/')[2];
+    const ptyRunning = ptyManager.isRunning(agentId);
+    if (ptyRunning) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'running' }));
+    } else {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'completed', output: '' }));
+    }
+    return;
+  }
+
   // GET /api/project/:projectSlug/context
   if (req.method === 'GET' && url.pathname.startsWith('/api/project/') && url.pathname.endsWith('/context')) {
     const projectSlug = url.pathname.split('/')[2];
