@@ -10,3 +10,6 @@ You create a PR or push a branch with the completed work.
 4. Return the branch name and commit SHA
 
 Do NOT force push. Do NOT delete remote branches.
+
+## Output Format
+Return a JSON object with branch name and commit SHA.

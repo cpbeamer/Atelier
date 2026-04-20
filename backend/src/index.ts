@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import { ptyManager } from './pty-manager.js';
 import { startSidecar } from './sidecar-lifecycle.js';
 import { milestones } from './db.js';
+import { loadProjectContext, saveProjectContext } from './project-context.js';
 import './ipc-handlers.js';
 
 declare global {
@@ -239,6 +240,76 @@ const httpServer = http.createServer(async (req, res) => {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: String(err) }));
     }
+    return;
+  }
+
+  // GET /api/project/:projectSlug/context
+  if (req.method === 'GET' && url.pathname.startsWith('/api/project/') && url.pathname.endsWith('/context')) {
+    const projectSlug = url.pathname.split('/')[2];
+    try {
+      const context = loadProjectContext(path.join(process.env.HOME || '', '.atelier', 'projects', projectSlug));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(context));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: String(err) }));
+    }
+    return;
+  }
+
+  // POST /api/project/:projectSlug/context
+  if (req.method === 'POST' && url.pathname.startsWith('/api/project/') && url.pathname.endsWith('/context')) {
+    const projectSlug = url.pathname.split('/')[2];
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const context = JSON.parse(body);
+        const projectPath = path.join(process.env.HOME || '', '.atelier', 'projects', projectSlug);
+        saveProjectContext(projectPath, context);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ saved: true }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+    });
+    return;
+  }
+
+  // POST /api/agent/start
+  if (req.method === 'POST' && url.pathname === '/api/agent/start') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const notification = JSON.parse(body);
+        broadcastToUI('agent:started', notification);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+    });
+    return;
+  }
+
+  // POST /api/agent/complete
+  if (req.method === 'POST' && url.pathname === '/api/agent/complete') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const completion = JSON.parse(body);
+        broadcastToUI('agent:completed', completion);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+    });
     return;
   }
 

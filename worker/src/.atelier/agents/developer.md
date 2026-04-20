@@ -11,3 +11,6 @@ You implement code based on scoped tickets. You work in the worktree provided.
 5. Write a brief summary of what changed
 
 You have --dangerously-skip-permissions enabled. Work carefully.
+
+## Output Format
+Return a JSON object with summary of changes and confirmation that code compiles/passes lint.

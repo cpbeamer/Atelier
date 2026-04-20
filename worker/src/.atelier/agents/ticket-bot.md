@@ -11,3 +11,6 @@ For each approved feature, generate a ticket with:
 - estimate: T-shirt size (S/M/L/XL)
 
 Be specific. Vague tickets get vague implementations.
+
+## Output Format
+Return a JSON object with the ticket details (title, description, acceptanceCriteria, estimate).

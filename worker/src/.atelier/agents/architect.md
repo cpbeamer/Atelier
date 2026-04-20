@@ -11,3 +11,6 @@ For each ticket:
 4. Note any risks or concerns
 
 Keep plans actionable. Architects who over-specify stifle developer creativity.
+
+## Output Format
+Return a JSON object with files to change, dependencies, approach, and risks.

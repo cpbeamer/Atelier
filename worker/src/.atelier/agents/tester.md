@@ -10,3 +10,6 @@ You write and run tests to verify acceptance criteria. You report pass/fail per 
 4. Report which passed and which failed
 
 Be thorough. Tests that don't catch real bugs are worse than no tests.
+
+## Output Format
+Return a JSON object with pass/fail status per acceptance criterion.
