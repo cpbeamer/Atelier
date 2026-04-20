@@ -20,20 +20,6 @@ const AUTOPILOT_PANES: TerminalPaneConfig[] = [
   { id: 'pusher', agentName: 'Pusher', agentType: 'direct-llm', status: 'waiting' },
 ];
 
-const handleAutopilotSelect = useCallback(async () => {
-  if (!activeProject) return;
-
-  const { runId } = await invoke<{ runId: string }>('autopilot.start', {
-    projectPath: activeProject.path,
-    projectSlug: activeProject.name.toLowerCase().replace(/\s+/g, '-'),
-    suggestedFeatures: [],
-  });
-
-  setWorkflowActive(true);
-  setActiveRun(runId);
-  setPanes(AUTOPILOT_PANES);
-}, [activeProject]);
-
 function App() {
   const [activeProject, setActiveProject] = useState<Project | null>(null);
   const [activeRun, setActiveRun] = useState<string | null>(null);
@@ -41,6 +27,20 @@ function App() {
   const [showInbox, setShowInbox] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [workflowActive, setWorkflowActive] = useState(false);
+
+  const handleAutopilotSelect = useCallback(async () => {
+    if (!activeProject) return;
+
+    const { runId } = await invoke<{ runId: string }>('autopilot.start', {
+      projectPath: activeProject.path,
+      projectSlug: activeProject.name.toLowerCase().replace(/\s+/g, '-'),
+      suggestedFeatures: [],
+    });
+
+    setWorkflowActive(true);
+    setActiveRun(runId);
+    setPanes(AUTOPILOT_PANES);
+  }, [activeProject]);
 
   const handleWorkflowSelect = useCallback(async (workflow: { name: string; language: string }) => {
     const { runId } = await invoke<{ runId: string }>('workflow.start', {
