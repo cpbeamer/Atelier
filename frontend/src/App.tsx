@@ -4,18 +4,51 @@ import { Sidebar } from './components/Sidebar';
 import { TerminalGrid, TerminalPaneConfig } from './components/TerminalGrid';
 import { MilestoneInbox } from './components/MilestoneInbox';
 import { WorkflowGraph } from './components/WorkflowGraph';
+import { SettingsModal } from './components/SettingsModal';
 import type { Project } from './lib/db';
+import { invoke } from './lib/ipc';
+
+const AUTOPILOT_PANES: TerminalPaneConfig[] = [
+  { id: 'researcher', agentName: 'Research Agent', agentType: 'terminal', status: 'waiting' },
+  { id: 'debate-a', agentName: 'Debate Agent A', agentType: 'terminal', status: 'waiting' },
+  { id: 'debate-b', agentName: 'Debate Agent B', agentType: 'terminal', status: 'waiting' },
+  { id: 'ticket-bot', agentName: 'Ticket Bot', agentType: 'direct-llm', status: 'waiting' },
+  { id: 'architect', agentName: 'Architect', agentType: 'terminal', status: 'waiting' },
+  { id: 'developer', agentName: 'Developer', agentType: 'terminal', status: 'waiting' },
+  { id: 'reviewer', agentName: 'Code Reviewer', agentType: 'terminal', status: 'waiting' },
+  { id: 'tester', agentName: 'Tester', agentType: 'terminal', status: 'waiting' },
+  { id: 'pusher', agentName: 'Pusher', agentType: 'direct-llm', status: 'waiting' },
+];
 
 function App() {
   const [activeProject, setActiveProject] = useState<Project | null>(null);
   const [activeRun, setActiveRun] = useState<string | null>(null);
   const [panes, setPanes] = useState<TerminalPaneConfig[]>([]);
   const [showInbox, setShowInbox] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [workflowActive, setWorkflowActive] = useState(false);
 
-  const handleWorkflowSelect = useCallback((workflow: { name: string; language: string }) => {
+  const handleAutopilotSelect = useCallback(async () => {
+    if (!activeProject) return;
+
+    const { runId } = await invoke<{ runId: string }>('autopilot.start', {
+      projectPath: activeProject.path,
+      projectSlug: activeProject.name.toLowerCase().replace(/\s+/g, '-'),
+      suggestedFeatures: [],
+    });
+
     setWorkflowActive(true);
-    setActiveRun(`run-${Date.now()}`);
+    setActiveRun(runId);
+    setPanes(AUTOPILOT_PANES);
+  }, [activeProject]);
+
+  const handleWorkflowSelect = useCallback(async (workflow: { name: string; language: string }) => {
+    const { runId } = await invoke<{ runId: string }>('workflow.start', {
+      name: workflow.name,
+      input: { language: workflow.language },
+    });
+    setWorkflowActive(true);
+    setActiveRun(runId);
     setPanes([
       { id: 'agent-1', agentName: 'PM Specialist', agentType: 'terminal', status: 'running' },
       { id: 'agent-2', agentName: 'PM Validator', agentType: 'terminal', status: 'running' },
@@ -42,6 +75,8 @@ function App() {
         activeProject={activeProject}
         onProjectSelect={setActiveProject}
         onWorkflowSelect={handleWorkflowSelect}
+        onSettingsClick={() => setShowSettings(true)}
+        onAutopilotClick={handleAutopilotSelect}
       />
 
       <div className="flex-1 flex flex-col bg-background">
@@ -78,6 +113,7 @@ function App() {
       </div>
 
       <MilestoneInbox isOpen={showInbox} onClose={() => setShowInbox(false)} />
+      <SettingsModal isOpen={showSettings} onClose={() => setShowSettings(false)} />
     </div>
   );
 }

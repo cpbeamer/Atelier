@@ -1,5 +1,5 @@
 // frontend/src/components/TerminalPane.tsx
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import { WebLinksAddon } from 'xterm-addon-web-links';
@@ -15,6 +15,7 @@ export function TerminalPane({ paneId, isActive }: Props) {
   const xtermRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const [agentStatus, setAgentStatus] = useState<'waiting' | 'running' | 'exited' | 'killed'>('waiting');
 
   useEffect(() => {
     if (!terminalRef.current || xtermRef.current) return;
@@ -70,11 +71,39 @@ export function TerminalPane({ paneId, isActive }: Props) {
     };
   }, [paneId]);
 
+  // Subscribe to agent lifecycle events
+  useEffect(() => {
+    const ws = new WebSocket('ws://localhost:3000');
+
+    const handleMessage = (event: MessageEvent) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'agent:started' && msg.payload.agentId === paneId) {
+          setAgentStatus('running');
+          if (xtermRef.current) {
+            xtermRef.current.writeln('\r\n[Agent started]\r\n');
+          }
+        } else if (msg.type === 'agent:completed' && msg.payload.agentId === paneId) {
+          setAgentStatus('exited');
+          if (xtermRef.current) {
+            xtermRef.current.writeln('\r\n[Agent completed]\r\n');
+          }
+        }
+      } catch {
+        // Ignore
+      }
+    };
+
+    ws.addEventListener('message', handleMessage);
+    return () => ws.close();
+  }, [paneId]);
+
   // Trigger agent start when pane becomes active
   useEffect(() => {
     if (isActive && xtermRef.current) {
       xtermRef.current.clear();
       xtermRef.current.writeln('[Starting Claude Code...]\r\n');
+      setAgentStatus('waiting');
       // PTY spawning is handled via IPC in a later task
     }
   }, [isActive, paneId]);

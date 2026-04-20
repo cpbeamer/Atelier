@@ -1,18 +1,685 @@
-// worker/src/activities.ts
-export async function spawnAgent(prompt: string): Promise<string> {
-  console.log(`Activity: spawnAgent called with prompt: ${prompt}`);
-  return `Agent spawned for prompt: ${prompt}`;
+export interface MilestoneDecision {
+  verdict: 'Approved' | 'Rejected';
+  reason?: string;
+  decidedBy: string;
 }
 
-export async function callAgent(agentName: string, input: unknown): Promise<{ output: string; agentName: string }> {
-  return { output: `Agent ${agentName} response`, agentName };
+export interface ResearchInput {
+  projectPath: string;
+  userContext?: Record<string, string>;
 }
 
-export async function createMilestone(name: string, payload: unknown): Promise<string> {
-  const id = crypto.randomUUID();
-  return id;
+export interface ResearchOutput {
+  repoStructure: string;
+  currentFeatures: string[];
+  gaps: string[];
+  opportunities: string[];
+  marketContext: string;
 }
 
-export async function resolveMilestone(milestoneId: string, decision: { verdict: string; reason?: string; decidedBy: string }): Promise<void> {
+export interface DebateInput {
+  repoAnalysis: ResearchOutput;
+  suggestedFeatures: string[];
+}
+
+export interface DebateOutput {
+  approvedFeatures: Array<{ name: string; rationale: string; priority: 'high' | 'medium' | 'low' }>;
+  rejectedFeatures: Array<{ name: string; reason: string }>;
+}
+
+export interface Ticket {
+  id: string;
+  title: string;
+  description: string;
+  acceptanceCriteria: string[];
+  estimate: 'S' | 'M' | 'L' | 'XL';
+}
+
+export interface TicketsInput {
+  approvedFeatures: DebateOutput['approvedFeatures'];
+}
+
+export interface TicketsOutput {
+  tickets: Ticket[];
+}
+
+export interface ScopedTicket extends Ticket {
+  technicalPlan: string;
+  filesToChange: string[];
+  dependencies: string[];
+}
+
+export interface ScopeInput {
+  tickets: Ticket[];
+  projectPath: string;
+  worktreePath: string;
+}
+
+export interface ScopeOutput {
+  scopedTickets: ScopedTicket[];
+}
+
+export interface Implementation {
+  ticketId: string;
+  code: string;
+  filesChanged: string[];
+}
+
+export interface ImplementInput {
+  ticket: ScopedTicket;
+  worktreePath: string;
+  projectPath: string;
+  feedback?: string[];
+  testFeedback?: string[];
+}
+
+export interface ImplementOutput {
+  code: string;
+  filesChanged: string[];
+}
+
+export interface ReviewResult {
+  approved: boolean;
+  comments: string[];
+}
+
+export interface ReviewInput {
+  implementation: Implementation;
+  ticket: ScopedTicket;
+}
+
+export interface TestResult {
+  allPassed: boolean;
+  failures: string[];
+}
+
+export interface TestInput {
+  implementation: Implementation;
+  ticket: ScopedTicket;
+}
+
+export interface PushResult {
+  branch: string;
+  commitSha: string;
+  prUrl?: string;
+}
+
+export interface PushInput {
+  worktreePath: string;
+  projectPath: string;
+  tickets: ScopedTicket[];
+}
+
+export interface AgentNotification {
+  agentId: string;
+  agentName: string;
+  terminalType: 'terminal' | 'direct-llm';
+}
+
+export interface AgentCompletion {
+  agentId: string;
+  status: 'completed' | 'error';
+  output?: string;
+}
+
+import fs from 'node:fs';
+import path from 'node:path';
+
+async function readFile(filePath: string): Promise<string> {
+  return fs.promises.readFile(filePath, 'utf-8');
+}
+
+async function listDir(dirPath: string): Promise<string[]> {
+  try {
+    const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
+    return entries.map(e => e.name);
+  } catch {
+    return [];
+  }
+}
+
+async function loadPersona(projectPath: string, personaKey: string): Promise<string> {
+  const personaPath = path.join(projectPath, '.atelier', 'agents', `${personaKey}.md`);
+  try {
+    return await fs.promises.readFile(personaPath, 'utf-8');
+  } catch {
+    // Fall back to bundled persona
+    const bundledPath = path.join(process.cwd(), 'src', '.atelier', 'agents', `${personaKey}.md`);
+    return fs.promises.readFile(bundledPath, 'utf-8');
+  }
+}
+
+async function runTerminalAgentViaPty(
+  agentId: string,
+  agentName: string,
+  personaKey: string,
+  task: string,
+  cwd?: string
+): Promise<string> {
+  // Notify frontend to spawn the PTY
+  await fetch('http://localhost:3001/api/agent/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agentId, agentName, terminalType: 'terminal' }),
+  });
+
+  // Call backend to spawn PTY
+  const response = await fetch('http://localhost:3001/api/pty/spawn', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: agentId, persona: personaKey, task, cwd }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to spawn PTY: ${response.statusText}`);
+  }
+
+  // Wait for completion signal
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('PTY timeout')), 30 * 60 * 1000);
+
+    const poll = async () => {
+      try {
+        const status = await fetch(`http://localhost:3001/api/agent/${agentId}/status`);
+        if (status.ok) {
+          const result = await status.json();
+          if (result.status === 'completed') {
+            clearTimeout(timeout);
+            resolve(result.output || '');
+            return;
+          }
+          if (result.status === 'error') {
+            clearTimeout(timeout);
+            reject(new Error(result.error));
+            return;
+          }
+        }
+      } catch {
+        // Continue polling
+      }
+      setTimeout(poll, 2000);
+    };
+    poll();
+  });
+}
+
+export async function callMiniMax(system: string, user: string): Promise<string> {
+  // Get API key from env var or backend
+  let apiKey = process.env.MINIMAX_API_KEY;
+  if (!apiKey) {
+    try {
+      const response = await fetch('http://localhost:3001/api/settings/apiKey/minimax');
+      if (response.ok) {
+        const data = await response.json();
+        apiKey = data.apiKey;
+      }
+    } catch {
+      // Backend not reachable
+    }
+  }
+  if (!apiKey) {
+    throw new Error('MiniMax API key not configured. Add it in Settings.');
+  }
+
+  const response = await fetch('https://api.minimax.chat/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'MiniMax/Abab6.5s-chat',
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      temperature: 0.7,
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`MiniMax API error: ${response.status} - ${text}`);
+  }
+
+  const data = await response.json();
+  return data.choices[0].message.content;
+}
+
+export async function spawnAgent(
+  agentName: string,
+  persona: string,
+  task: string,
+  context?: Record<string, string>
+): Promise<string> {
+  // Build context string for agents that receive prior agent outputs
+  let contextStr = '';
+  if (context) {
+    contextStr = '\n\n## Context from Prior Agents\n';
+    for (const [name, output] of Object.entries(context)) {
+      contextStr += `\n### ${name}\n${output}\n`;
+    }
+  }
+
+  // Load persona content from .atelier/agents/{persona}.md
+  const personaPath = `.atelier/agents/${persona}.md`;
+  const personaFile = Bun.file(personaPath);
+  if (!await personaFile.exists()) {
+    throw new Error(`Persona file not found: ${personaPath}`);
+  }
+  const systemPrompt = await personaFile.text();
+  const fullPrompt = `${task}${contextStr}`;
+
+  return callMiniMax(systemPrompt, fullPrompt);
+}
+
+// Stub implementations - replace with real agent logic in later tasks
+
+export async function researchRepo(input: ResearchInput): Promise<ResearchOutput> {
+  const { projectPath, userContext = {} } = input;
+
+  // Read key files
+  const readme = await readFile(path.join(projectPath, 'README.md')).catch(() => '');
+  const packageJson = await readFile(path.join(projectPath, 'package.json')).catch(() => '');
+  const srcDir = path.join(projectPath, 'src');
+  const srcFiles = await listDir(srcDir).catch(() => []);
+
+  // Build repo structure summary
+  const repoStructure = [
+    `README.md: ${readme.split('\n').slice(0, 10).join(' ')}...`,
+    `package.json: ${packageJson}`,
+    `src/: ${srcFiles.slice(0, 20).join(', ')}${srcFiles.length > 20 ? '...' : ''}`,
+  ].join('\n');
+
+  // Parse package.json for current features
+  let currentFeatures: string[] = [];
+  let gaps: string[] = [];
+  try {
+    const pkg = JSON.parse(packageJson);
+    currentFeatures = Object.keys(pkg.dependencies || {}).slice(0, 10);
+    if (!pkg.scripts?.test) gaps.push('No test script');
+    if (!pkg.scripts?.lint) gaps.push('No lint script');
+    if (!pkg.github) gaps.push('No GitHub Actions configured');
+  } catch {
+    gaps.push('Could not parse package.json');
+  }
+
+  // Call Claude Code research via persona
+  const researchPrompt = `
+Project path: ${projectPath}
+
+User context (from previous sessions):
+${Object.entries(userContext).map(([k, v]) => `${k}: ${v}`).join('\n')}
+
+Research this codebase. Read README.md, package.json, and key source files.
+Identify:
+1. What does this project do?
+2. What are the current features?
+3. What gaps or technical debt exists?
+4. What opportunities for improvement?
+
+Format your response as JSON with fields: repoStructure, currentFeatures, gaps, opportunities, marketContext
+`;
+
+  const persona = await loadPersona(projectPath, 'researcher');
+  const result = await callMiniMax(persona, researchPrompt);
+
+  // Parse the result
+  try {
+    const parsed = JSON.parse(result);
+    return {
+      repoStructure: parsed.repoStructure || repoStructure,
+      currentFeatures: parsed.currentFeatures || currentFeatures,
+      gaps: parsed.gaps || gaps,
+      opportunities: parsed.opportunities || [],
+      marketContext: parsed.marketContext || '',
+    };
+  } catch {
+    return {
+      repoStructure,
+      currentFeatures,
+      gaps,
+      opportunities: [],
+      marketContext: '',
+    };
+  }
+}
+
+export async function debateFeatures(input: DebateInput): Promise<DebateOutput> {
+  const { repoAnalysis, suggestedFeatures } = input;
+
+  // Load both debate personas
+  const signalPersona = await loadPersona(process.cwd(), 'debate-signal');
+  const noisePersona = await loadPersona(process.cwd(), 'debate-noise');
+
+  const featuresToDebate = suggestedFeatures.length > 0
+    ? suggestedFeatures
+    : repoAnalysis.opportunities;
+
+  // Run both agents in parallel
+  const debatePrompt = `
+You are debating features for this project:
+
+REPO ANALYSIS:
+${JSON.stringify(repoAnalysis, null, 2)}
+
+FEATURES TO DEBATE:
+${featuresToDebate.map((f, i) => `${i + 1}. ${f}`).join('\n')}
+
+For EACH feature, provide your assessment.
+`;
+
+  const [signalResult, noiseResult] = await Promise.all([
+    callMiniMax(signalPersona, `FOR each feature:\n${debatePrompt}`),
+    callMiniMax(noisePersona, `AGAINST each feature (be skeptical):\n${debatePrompt}`),
+  ]);
+
+  // Reconciliation: both agents' outputs are fed to a final arbiter
+  const reconciliation = await callMiniMax(
+    'You are a pragmatic product manager. Filter signal from noise. Respond in JSON format only.',
+    `Repo: ${repoAnalysis.repoStructure}\n\nSignal: ${signalResult}\n\nNoise: ${noiseResult}\n\nDecide which features to APPROVE (have genuine value and scope) and which to REJECT (noise or too ambitious). Respond as JSON with:\n- approvedFeatures: [{name, rationale, priority}]\n- rejectedFeatures: [{name, reason}]`
+  );
+
+  try {
+    return JSON.parse(reconciliation);
+  } catch {
+    return {
+      approvedFeatures: featuresToDebate.slice(0, 3).map(f => ({ name: f, rationale: 'Default approved', priority: 'medium' as const })),
+      rejectedFeatures: [],
+    };
+  }
+}
+
+export async function generateTickets(input: TicketsInput): Promise<TicketsOutput> {
+  const { approvedFeatures } = input;
+
+  if (approvedFeatures.length === 0) {
+    return { tickets: [] };
+  }
+
+  const persona = await loadPersona(process.cwd(), 'ticket-bot');
+
+  const prompt = `
+Approved features to ticket:
+
+${approvedFeatures.map(f => `- ${f.name}: ${f.rationale} (priority: ${f.priority})`).join('\n')}
+
+For each feature, generate a ticket with:
+- id: auto-generated (TICKET-1, TICKET-2, etc.)
+- title: Concise feature name
+- description: What and why (2-3 sentences)
+- acceptanceCriteria: 3-5 specific, testable criteria
+- estimate: T-shirt size (S/M/L/XL)
+
+Respond ONLY with valid JSON array of tickets.
+`;
+
+  const result = await callMiniMax(persona, prompt);
+
+  try {
+    const tickets = JSON.parse(result);
+    return { tickets };
+  } catch {
+    return {
+      tickets: approvedFeatures.map((f, i) => ({
+        id: `TICKET-${i + 1}`,
+        title: f.name,
+        description: f.rationale,
+        acceptanceCriteria: ['Implementation complete'],
+        estimate: f.priority === 'high' ? 'L' : 'M',
+      })),
+    };
+  }
+}
+
+export async function scopeArchitecture(input: ScopeInput): Promise<ScopeOutput> {
+  const { tickets, projectPath, worktreePath } = input;
+
+  const persona = await loadPersona(projectPath, 'architect');
+
+  const prompt = `
+Project path: ${projectPath}
+Worktree: ${worktreePath}
+
+Tickets to scope:
+
+${tickets.map(t => `
+TICKET: ${t.title}
+${t.description}
+Estimate: ${t.estimate}
+`).join('\n---\n')}
+
+For EACH ticket, provide:
+1. technicalPlan: High-level approach (3-5 sentences)
+2. filesToChange: Specific files to create/modify
+3. dependencies: What must be done first
+
+Be specific. Generic plans are useless.
+`;
+
+  const result = await callMiniMax(persona, prompt);
+
+  // Try to parse as JSON, fall back to structured parsing
+  try {
+    const parsed = JSON.parse(result);
+    return {
+      scopedTickets: tickets.map((t, i) => ({
+        ...t,
+        technicalPlan: parsed[i]?.technicalPlan || 'Plan pending',
+        filesToChange: parsed[i]?.filesToChange || [],
+        dependencies: parsed[i]?.dependencies || [],
+      })),
+    };
+  } catch {
+    // Fall back: split by ticket and extract fields heuristically
+    return {
+      scopedTickets: tickets.map(t => ({
+        ...t,
+        technicalPlan: result.substring(0, 500),
+        filesToChange: [],
+        dependencies: [],
+      })),
+    };
+  }
+}
+
+export async function implementCode(input: ImplementInput): Promise<ImplementOutput> {
+  const { ticket, worktreePath, projectPath, feedback, testFeedback } = input;
+
+  const persona = await loadPersona(projectPath, 'developer');
+
+  let prompt = `
+Ticket: ${ticket.title}
+${ticket.description}
+
+Technical plan:
+${ticket.technicalPlan}
+
+Files to change: ${ticket.filesToChange.join(', ')}
+
+Worktree: ${worktreePath}
+`;
+
+  if (feedback && feedback.length > 0) {
+    prompt += `\n\nCODE REVIEW FEEDBACK to address:
+${feedback.join('\n')}\n`;
+  }
+
+  if (testFeedback && testFeedback.length > 0) {
+    prompt += `\n\nTEST FAILURES to fix:
+${testFeedback.join('\n')}\n`;
+  }
+
+  const result = await callMiniMax(persona, prompt);
+
+  // Developer outputs the actual code changes - parse and apply them
+  // For now, return the LLM output as code
+  return {
+    code: result,
+    filesChanged: ticket.filesToChange,
+  };
+}
+
+export async function reviewCode(input: ReviewInput): Promise<ReviewResult> {
+  const { implementation, ticket } = input;
+
+  const persona = await loadPersona(process.cwd(), 'code-reviewer');
+
+  const prompt = `
+Review this code for ticket: ${ticket.title}
+
+CODE:
+\`\`\`
+${implementation.code}
+\`\`\`
+
+ACCEPTANCE CRITERIA:
+${ticket.acceptanceCriteria.map(c => `- ${c}`).join('\n')}
+
+FILES CHANGED: ${implementation.filesChanged.join(', ')}
+
+Review against the criteria. Return JSON:
+{ "approved": true/false, "comments": ["specific comment 1", "specific comment 2"] }
+`;
+
+  const result = await callMiniMax(persona, prompt);
+
+  try {
+    return JSON.parse(result);
+  } catch {
+    return { approved: false, comments: ['Could not parse review output'] };
+  }
+}
+
+export async function testCode(input: TestInput): Promise<TestResult> {
+  const { implementation, ticket } = input;
+
+  const persona = await loadPersona(process.cwd(), 'tester');
+
+  const prompt = `
+Test this implementation for ticket: ${ticket.title}
+
+CODE:
+\`\`\`
+${implementation.code}
+\`\`\`
+
+ACCEPTANCE CRITERIA:
+${ticket.acceptanceCriteria.map(c => `- ${c}`).join('\n')}
+
+FILES: ${implementation.filesChanged.join(', ')}
+
+Write and run tests to verify each acceptance criterion.
+Report pass/fail for each criterion.
+
+Return JSON:
+{ "allPassed": true/false, "failures": ["criterion that failed", ...] }
+`;
+
+  const result = await callMiniMax(persona, prompt);
+
+  try {
+    return JSON.parse(result);
+  } catch {
+    return { allPassed: false, failures: ['Could not parse test output'] };
+  }
+}
+
+export async function pushChanges(input: PushInput): Promise<PushResult> {
+  const { worktreePath, projectPath, tickets } = input;
+
+  const persona = await loadPersona(projectPath, 'pusher');
+
+  const prompt = `
+Worktree: ${worktreePath}
+Project: ${projectPath}
+
+Tickets completed:
+${tickets.map(t => `- ${t.title}: ${t.description}`).join('\n')}
+
+1. Create branch: \`atelier/autopilot/${Date.now()}\`
+2. Commit all changes with a meaningful message
+3. Push to remote
+
+Return JSON:
+{ "branch": "branch-name", "commitSha": "abc123", "prUrl": "optional-pr-url" }
+`;
+
+  const result = await callMiniMax(persona, prompt);
+
+  try {
+    return JSON.parse(result);
+  } catch {
+    return { branch: `atelier/autopilot/${Date.now()}`, commitSha: 'unknown' };
+  }
+}
+
+export async function notifyAgentStart(input: AgentNotification): Promise<void> {
+  // Notify frontend via HTTP callback to show this agent's terminal
+  try {
+    await fetch('http://localhost:3001/api/agent/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+  } catch {
+    // Backend not reachable - non-fatal
+  }
+}
+
+export async function notifyAgentComplete(input: AgentCompletion): Promise<void> {
+  try {
+    await fetch('http://localhost:3001/api/agent/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+  } catch {
+    // Non-fatal
+  }
+}
+
+const BACKEND_URL = 'http://localhost:3001';
+
+export async function createMilestone(name: string, payload: unknown): Promise<MilestoneDecision> {
+  // Get runId from context if available, otherwise use a default
+  const runId = 'default';
+
+  // Call backend to create milestone
+  const response = await fetch(`${BACKEND_URL}/api/milestone/create`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ runId, name, payload }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to create milestone: ${response.statusText}`);
+  }
+
+  const { id } = await response.json();
+
+  // Poll for resolution with exponential backoff
+  const startTime = Date.now();
+  const timeout = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+  while (Date.now() - startTime < timeout) {
+    const checkResponse = await fetch(`${BACKEND_URL}/api/milestone/${id}`);
+    if (checkResponse.ok) {
+      const milestone = await checkResponse.json();
+      if (milestone.resolved) {
+        return milestone.decision;
+      }
+    }
+    // Wait before next poll (1 second)
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+
+  throw new Error('Milestone timeout');
+}
+
+export async function resolveMilestone(
+  milestoneId: string,
+  decision: { verdict: string; reason?: string; decidedBy: string }
+): Promise<void> {
   console.log('resolveMilestone', milestoneId, decision);
 }

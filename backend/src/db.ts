@@ -1,18 +1,18 @@
 // backend/src/db.ts
-import Database from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 import path from 'node:path';
 import fs from 'node:fs';
 
 const DB_PATH = path.join(process.env.HOME || '', '.atelier', 'db', 'atelier.sqlite');
 
-let db: Database.Database;
+let db: Database;
 
-export function getDb(): Database.Database {
+export function getDb(): Database {
   if (!db) {
     const dir = path.dirname(DB_PATH);
     fs.mkdirSync(dir, { recursive: true });
     db = new Database(DB_PATH);
-    db.pragma('journal_mode = WAL');
+    db.run('PRAGMA journal_mode = WAL');
     migrate();
   }
   return db;
@@ -59,7 +59,30 @@ function migrate() {
 
     CREATE INDEX IF NOT EXISTS idx_runs_project ON workflow_runs(project_id, started_at DESC);
     CREATE INDEX IF NOT EXISTS idx_milestones_pending ON milestones(status);
+
+    CREATE TABLE IF NOT EXISTS model_config (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      base_url TEXT NOT NULL,
+      enabled INTEGER DEFAULT 0,
+      models_json TEXT DEFAULT '[]'
+    );
+
+    CREATE TABLE IF NOT EXISTS project_context (
+      project_id TEXT PRIMARY KEY,
+      context_json TEXT NOT NULL DEFAULT '{}',
+      updated_at INTEGER NOT NULL
+    );
   `);
+
+  // Seed MiniMax and OpenRouter if no providers exist
+  const count = getDb().prepare('SELECT COUNT(*) as c FROM model_config').get() as { c: number };
+  if (count.c === 0) {
+    getDb().prepare(`INSERT INTO model_config (id, name, base_url, enabled, models_json) VALUES (?,?,?,?,?)`)
+      .run('minimax', 'MiniMax', 'https://api.minimax.chat/v1', 0, '["MiniMax/Abab6.5s-chat","MiniMax/Abab6.5-chat"]');
+    getDb().prepare(`INSERT INTO model_config (id, name, base_url, enabled, models_json) VALUES (?,?,?,?,?)`)
+      .run('openrouter', 'OpenRouter', 'https://openrouter.ai/api/v1', 0, '["anthropic/claude-3.5-sonnet","openai/gpt-4o"]');
+  }
 }
 
 export const projects = {
@@ -92,4 +115,32 @@ export const milestones = {
       .run(status, decided_at, decided_by, decision_reason, id),
   listPending: () => getDb().prepare("SELECT * FROM milestones WHERE status='pending' ORDER BY created_at").all(),
   listByRun: (runId: string) => getDb().prepare('SELECT * FROM milestones WHERE run_id = ? ORDER BY created_at').all(runId),
+  findById: (id: string) => getDb().prepare('SELECT * FROM milestones WHERE id = ?').get(id),
+};
+
+export const modelConfig = {
+  upsert: (id: string, name: string, baseUrl: string, enabled: number, modelsJson: string) =>
+    getDb().prepare(`
+      INSERT INTO model_config (id, name, base_url, enabled, models_json)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        name=excluded.name, base_url=excluded.base_url,
+        enabled=excluded.enabled, models_json=excluded.models_json
+    `).run(id, name, baseUrl, enabled, modelsJson),
+  list: () => getDb().prepare('SELECT * FROM model_config ORDER BY name').all(),
+  setEnabled: (id: string, enabled: number) =>
+    getDb().prepare('UPDATE model_config SET enabled=? WHERE id=?').run(enabled, id),
+  setModels: (id: string, modelsJson: string) =>
+    getDb().prepare('UPDATE model_config SET models_json=? WHERE id=?').run(modelsJson, id),
+};
+
+export const projectContext = {
+  get: (projectId: string) =>
+    getDb().prepare('SELECT context_json FROM project_context WHERE project_id = ?').get(projectId) as { context_json: string } | undefined,
+  set: (projectId: string, contextJson: string) =>
+    getDb().prepare(`
+      INSERT INTO project_context (project_id, context_json, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(project_id) DO UPDATE SET context_json = excluded.context_json, updated_at = excluded.updated_at
+    `).run(projectId, contextJson, Date.now()),
 };

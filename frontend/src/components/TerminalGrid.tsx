@@ -1,6 +1,6 @@
 // frontend/src/components/TerminalGrid.tsx
-import { useState, useCallback, useEffect } from 'react';
-import GridLayout from 'react-grid-layout';
+import { useState, useCallback, useEffect, useRef } from 'react';
+import { GridLayout, Layout, verticalCompactor } from 'react-grid-layout';
 import { TerminalPane } from './TerminalPane';
 import { X, Plus } from 'lucide-react';
 import 'react-grid-layout/css/styles.css';
@@ -19,8 +19,24 @@ interface Props {
 }
 
 export function TerminalGrid({ panes, onPaneClose, onPaneAdd }: Props) {
-  const [layout, setLayout] = useState(() =>
-    panes.map((pane, i) => ({
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [containerWidth, setContainerWidth] = useState(1200);
+
+  const [layout, setLayout] = useState<Layout>([]);
+
+  useEffect(() => {
+    const updateWidth = () => {
+      if (containerRef.current) {
+        setContainerWidth(containerRef.current.offsetWidth);
+      }
+    };
+    updateWidth();
+    window.addEventListener('resize', updateWidth);
+    return () => window.removeEventListener('resize', updateWidth);
+  }, []);
+
+  useEffect(() => {
+    const newLayout: Layout = panes.map((pane, i) => ({
       i: pane.id,
       x: 0,
       y: i * 6,
@@ -28,37 +44,19 @@ export function TerminalGrid({ panes, onPaneClose, onPaneAdd }: Props) {
       h: 8,
       minW: 3,
       minH: 4,
-    }))
-  );
-
-  useEffect(() => {
+    }));
     setLayout((prev) => {
-      const newIds = panes.map((p) => p.id);
-      const filtered = prev.filter((l) => newIds.includes(l.i));
-      const existingIds = filtered.map((l) => l.i);
-      for (const pane of panes) {
-        if (!existingIds.includes(pane.id)) {
-          filtered.push({
-            i: pane.id,
-            x: 0,
-            y: (prev.length > 0 ? Math.max(...prev.map((l) => l.y + l.h)) : 0),
-            w: 12,
-            h: 8,
-            minW: 3,
-            minH: 4,
-          });
-        }
-      }
-      return filtered;
+      const existingItems = new Map(prev.map(l => [l.i, l]));
+      return newLayout.map(item => existingItems.get(item.i) || item);
     });
-  }, [panes.length]);
+  }, [panes]);
 
-  const handleLayoutChange = useCallback((newLayout: GridLayout.Layout[]) => {
+  const handleLayoutChange = useCallback((newLayout: Layout) => {
     setLayout(newLayout);
   }, []);
 
   return (
-    <div className="relative h-full w-full bg-muted/20">
+    <div ref={containerRef} className="relative h-full w-full bg-muted/20">
       {/* Toolbar */}
       <div className="absolute top-2 right-2 z-10 flex items-center gap-2">
         <button
@@ -72,14 +70,19 @@ export function TerminalGrid({ panes, onPaneClose, onPaneAdd }: Props) {
 
       <GridLayout
         className="layout"
+        width={containerWidth}
         layout={layout}
-        cols={12}
-        rowHeight={30}
-        width={1200}
+        gridConfig={{
+          cols: 12,
+          rowHeight: 30,
+          margin: [10, 10] as [number, number],
+        }}
+        dragConfig={{
+          enabled: true,
+          handle: '.pane-header',
+        }}
+        compactor={verticalCompactor}
         onLayoutChange={handleLayoutChange}
-        draggableHandle=".pane-header"
-        compactType="vertical"
-        preventCollision={false}
       >
         {panes.map((pane) => (
           <div key={pane.id} className="bg-zinc-900 rounded-lg overflow-hidden border border-zinc-800 flex flex-col">
