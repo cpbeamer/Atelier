@@ -397,8 +397,32 @@ Return JSON:
 }
 
 export async function pushChanges(input: PushInput): Promise<PushResult> {
-  // TODO: Call Pusher (direct LLM)
-  return { branch: 'atelier/autopilot/run-1', commitSha: 'abc123' };
+  const { worktreePath, projectPath, tickets } = input;
+
+  const persona = await loadPersona(projectPath, 'pusher');
+
+  const prompt = `
+Worktree: ${worktreePath}
+Project: ${projectPath}
+
+Tickets completed:
+${tickets.map(t => `- ${t.title}: ${t.description}`).join('\n')}
+
+1. Create branch: \`atelier/autopilot/${Date.now()}\`
+2. Commit all changes with a meaningful message
+3. Push to remote
+
+Return JSON:
+{ "branch": "branch-name", "commitSha": "abc123", "prUrl": "optional-pr-url" }
+`;
+
+  const result = await callMiniMax(persona, prompt);
+
+  try {
+    return JSON.parse(result);
+  } catch {
+    return { branch: `atelier/autopilot/${Date.now()}`, commitSha: 'unknown' };
+  }
 }
 
 export async function notifyAgentStart(input: AgentNotification): Promise<void> {
