@@ -241,16 +241,45 @@ export async function debateFeatures(input: DebateInput): Promise<DebateOutput> 
 }
 
 export async function generateTickets(input: TicketsInput): Promise<TicketsOutput> {
-  // TODO: Call Ticket Bot (direct LLM)
-  return {
-    tickets: [{
-      id: 'TICKET-1',
-      title: 'Add CI/CD pipeline',
-      description: 'Set up GitHub Actions for CI/CD',
-      acceptanceCriteria: ['CI passes', 'CD deploys to staging'],
-      estimate: 'M',
-    }],
-  };
+  const { approvedFeatures } = input;
+
+  if (approvedFeatures.length === 0) {
+    return { tickets: [] };
+  }
+
+  const persona = await loadPersona(process.cwd(), 'ticket-bot');
+
+  const prompt = `
+Approved features to ticket:
+
+${approvedFeatures.map(f => `- ${f.name}: ${f.rationale} (priority: ${f.priority})`).join('\n')}
+
+For each feature, generate a ticket with:
+- id: auto-generated (TICKET-1, TICKET-2, etc.)
+- title: Concise feature name
+- description: What and why (2-3 sentences)
+- acceptanceCriteria: 3-5 specific, testable criteria
+- estimate: T-shirt size (S/M/L/XL)
+
+Respond ONLY with valid JSON array of tickets.
+`;
+
+  const result = await callMiniMax(persona, prompt);
+
+  try {
+    const tickets = JSON.parse(result);
+    return { tickets };
+  } catch {
+    return {
+      tickets: approvedFeatures.map((f, i) => ({
+        id: `TICKET-${i + 1}`,
+        title: f.name,
+        description: f.rationale,
+        acceptanceCriteria: ['Implementation complete'],
+        estimate: f.priority === 'high' ? 'L' : 'M',
+      })),
+    };
+  }
 }
 
 export async function scopeArchitecture(input: ScopeInput): Promise<ScopeOutput> {
