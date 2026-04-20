@@ -8,6 +8,32 @@ import { SettingsModal } from './components/SettingsModal';
 import type { Project } from './lib/db';
 import { invoke } from './lib/ipc';
 
+const AUTOPILOT_PANES: TerminalPaneConfig[] = [
+  { id: 'researcher', agentName: 'Research Agent', agentType: 'terminal', status: 'waiting' },
+  { id: 'debate-a', agentName: 'Debate Agent A', agentType: 'terminal', status: 'waiting' },
+  { id: 'debate-b', agentName: 'Debate Agent B', agentType: 'terminal', status: 'waiting' },
+  { id: 'ticket-bot', agentName: 'Ticket Bot', agentType: 'direct-llm', status: 'waiting' },
+  { id: 'architect', agentName: 'Architect', agentType: 'terminal', status: 'waiting' },
+  { id: 'developer', agentName: 'Developer', agentType: 'terminal', status: 'waiting' },
+  { id: 'reviewer', agentName: 'Code Reviewer', agentType: 'terminal', status: 'waiting' },
+  { id: 'tester', agentName: 'Tester', agentType: 'terminal', status: 'waiting' },
+  { id: 'pusher', agentName: 'Pusher', agentType: 'direct-llm', status: 'waiting' },
+];
+
+const handleAutopilotSelect = useCallback(async () => {
+  if (!activeProject) return;
+
+  const { runId } = await invoke<{ runId: string }>('autopilot.start', {
+    projectPath: activeProject.path,
+    projectSlug: activeProject.name.toLowerCase().replace(/\s+/g, '-'),
+    suggestedFeatures: [],
+  });
+
+  setWorkflowActive(true);
+  setActiveRun(runId);
+  setPanes(AUTOPILOT_PANES);
+}, [activeProject]);
+
 function App() {
   const [activeProject, setActiveProject] = useState<Project | null>(null);
   const [activeRun, setActiveRun] = useState<string | null>(null);
@@ -50,6 +76,7 @@ function App() {
         onProjectSelect={setActiveProject}
         onWorkflowSelect={handleWorkflowSelect}
         onSettingsClick={() => setShowSettings(true)}
+        onAutopilotClick={handleAutopilotSelect}
       />
 
       <div className="flex-1 flex flex-col bg-background">
