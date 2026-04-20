@@ -292,11 +292,48 @@ Format your response as JSON with fields: repoStructure, currentFeatures, gaps, 
 }
 
 export async function debateFeatures(input: DebateInput): Promise<DebateOutput> {
-  // TODO: Run debate agents in parallel, reconcile
-  return {
-    approvedFeatures: [{ name: 'Add CI/CD', rationale: 'table stakes', priority: 'high' }],
-    rejectedFeatures: [{ name: 'Add AI buzzword feature', reason: 'vanity, no user need' }],
-  };
+  const { repoAnalysis, suggestedFeatures } = input;
+
+  // Load both debate personas
+  const signalPersona = await loadPersona(process.cwd(), 'debate-signal');
+  const noisePersona = await loadPersona(process.cwd(), 'debate-noise');
+
+  const featuresToDebate = suggestedFeatures.length > 0
+    ? suggestedFeatures
+    : repoAnalysis.opportunities;
+
+  // Run both agents in parallel
+  const debatePrompt = `
+You are debating features for this project:
+
+REPO ANALYSIS:
+${JSON.stringify(repoAnalysis, null, 2)}
+
+FEATURES TO DEBATE:
+${featuresToDebate.map((f, i) => `${i + 1}. ${f}`).join('\n')}
+
+For EACH feature, provide your assessment.
+`;
+
+  const [signalResult, noiseResult] = await Promise.all([
+    callMiniMax(signalPersona, `FOR each feature:\n${debatePrompt}`),
+    callMiniMax(noisePersona, `AGAINST each feature (be skeptical):\n${debatePrompt}`),
+  ]);
+
+  // Reconciliation: both agents' outputs are fed to a final arbiter
+  const reconciliation = await callMiniMax(
+    'You are a pragmatic product manager. Filter signal from noise. Respond in JSON format only.',
+    `Repo: ${repoAnalysis.repoStructure}\n\nSignal: ${signalResult}\n\nNoise: ${noiseResult}\n\nDecide which features to APPROVE (have genuine value and scope) and which to REJECT (noise or too ambitious). Respond as JSON with:\n- approvedFeatures: [{name, rationale, priority}]\n- rejectedFeatures: [{name, reason}]`
+  );
+
+  try {
+    return JSON.parse(reconciliation);
+  } catch {
+    return {
+      approvedFeatures: featuresToDebate.slice(0, 3).map(f => ({ name: f, rationale: 'Default approved', priority: 'medium' as const })),
+      rejectedFeatures: [],
+    };
+  }
 }
 
 export async function generateTickets(input: TicketsInput): Promise<TicketsOutput> {
