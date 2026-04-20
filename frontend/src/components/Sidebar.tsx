@@ -1,6 +1,6 @@
 // frontend/src/components/Sidebar.tsx
 import { useState, useEffect } from 'react';
-import { FolderClosed, Play, Settings, SquareTerminal, Plus } from 'lucide-react';
+import { FolderClosed, Play, Settings, SquareTerminal, Plus, Zap } from 'lucide-react';
 import { invoke } from '../lib/ipc';
 import type { Project } from '../lib/db';
 
@@ -8,10 +8,11 @@ interface Props {
   onProjectSelect?: (project: Project) => void;
   onWorkflowSelect?: (workflow: { name: string; language: 'typescript' | 'python' }) => void;
   onSettingsClick?: () => void;
+  onAutopilotClick?: () => void;
   activeProject?: Project | null;
 }
 
-export function Sidebar({ onProjectSelect, onWorkflowSelect, onSettingsClick, activeProject }: Props) {
+export function Sidebar({ onProjectSelect, onWorkflowSelect, onSettingsClick, onAutopilotClick, activeProject }: Props) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [workflows, setWorkflows] = useState<Array<{ name: string; language: 'typescript' | 'python' }>>([]);
 
@@ -113,6 +114,18 @@ export function Sidebar({ onProjectSelect, onWorkflowSelect, onSettingsClick, ac
               </span>
             </button>
           ))}
+        </div>
+      )}
+
+      {activeProject && (
+        <div className="p-2 border-t border-border">
+          <button
+            onClick={() => onAutopilotClick?.()}
+            className="w-full text-left px-2 py-1.5 rounded-md bg-primary/10 hover:bg-primary/20 flex items-center gap-2 text-sm text-primary font-medium"
+          >
+            <Zap className="w-4 h-4" />
+            Autopilot
+          </button>
         </div>
       )}
 
