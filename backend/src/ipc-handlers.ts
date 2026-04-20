@@ -119,14 +119,21 @@ register('settings.apiKey:delete', async (opts: { providerId: string }) => {
   await keytar.deletePassword(SERVICE_NAME, keychainKey(opts.providerId, 'apiKey'));
 });
 
-// Workflow handler
-register('workflow.start', async (opts: { name: string; input: any }) => {
+register('autopilot.start', async (opts: { projectPath: string; projectSlug: string; suggestedFeatures?: string[] }) => {
   const connection = await Connection.connect({ address: '127.0.0.1:7466' });
   const client = new Client({ connection });
-  const handle = await client.workflow.start('featurePipeline', {
-    args: [opts.input],
+
+  const runId = `autopilot-${Date.now()}`;
+  const handle = await client.workflow.start('autopilot', {
+    args: [{
+      projectPath: opts.projectPath,
+      projectSlug: opts.projectSlug,
+      runId,
+      suggestedFeatures: opts.suggestedFeatures || [],
+    }],
     taskQueue: 'atelier-default-ts',
-    workflowId: `run-${Date.now()}`,
+    workflowId: `autopilot-${opts.projectSlug}-${runId}`,
   });
-  return { runId: handle.workflowId };
+
+  return { runId, workflowId: handle.workflowId };
 });
