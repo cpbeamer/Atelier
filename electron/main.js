@@ -14,9 +14,23 @@ function createWindow() {
     titleBarOverlay: true
   });
 
+  // Open DevTools automatically
+  win.webContents.openDevTools();
+
   // In development, load from Vite
-  if (process.env.NODE_ENV === 'development') {
-    win.loadURL('http://localhost:5173');
+  const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
+  console.log('[Electron] Creating window, isDev:', isDev);
+  if (isDev) {
+    console.log('[Electron] Loading http://localhost:5173');
+    win.loadURL('http://localhost:5173').catch(err => {
+      console.error('[Electron] Failed to load URL:', err);
+    });
+    win.webContents.on('did-fail-load', (event, errorCode, errorDesc) => {
+      console.error('[Electron] Failed to load:', errorCode, errorDesc);
+    });
+    win.webContents.on('did-finish-load', () => {
+      console.log('[Electron] Page finished loading');
+    });
   } else {
     win.loadFile(path.join(__dirname, '../frontend/dist/index.html'));
   }

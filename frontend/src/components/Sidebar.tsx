@@ -1,6 +1,7 @@
 // frontend/src/components/Sidebar.tsx
 import { useState, useEffect } from 'react';
 import { FolderClosed, Play, Settings, SquareTerminal, Plus } from 'lucide-react';
+import { invoke } from '../lib/ipc';
 import type { Project } from '../lib/db';
 
 interface Props {
@@ -28,23 +29,25 @@ export function Sidebar({ onProjectSelect, onWorkflowSelect, onSettingsClick, ac
   }
 
   async function handleAddProject() {
-    const folderPath = prompt('Enter project path:');
-    if (folderPath) {
-      try {
-        const projectName = folderPath.split('/').pop() || 'New Project';
-        const id = `proj-${Date.now()}`;
-        const now = Date.now();
-        await invoke('db.addProject', { id, name: projectName, path: folderPath });
-        setProjects(prev => [...prev, {
-          id,
-          name: projectName,
-          path: folderPath,
-          created_at: now,
-          last_opened_at: now,
-          settings_json: '{}',
-        }]);
-      } catch (e) {
-        console.error('Failed to add project:', e);
+    if (window.electronAPI) {
+      const folderPath = await window.electronAPI.openFolder();
+      if (folderPath) {
+        try {
+          const projectName = folderPath.split('/').pop() || 'New Project';
+          const id = `proj-${Date.now()}`;
+          const now = Date.now();
+          await invoke('db.addProject', { id, name: projectName, path: folderPath });
+          setProjects(prev => [...prev, {
+            id,
+            name: projectName,
+            path: folderPath,
+            created_at: now,
+            last_opened_at: now,
+            settings_json: '{}',
+          }]);
+        } catch (e) {
+          console.error('Failed to add project:', e);
+        }
       }
     }
   }
