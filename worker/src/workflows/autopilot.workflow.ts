@@ -1,5 +1,5 @@
 // worker/src/workflows/autopilot.workflow.ts
-import { proxyActivities, setHandler, workflowInfo } from '@temporalio/workflow';
+import { proxyActivities } from '@temporalio/workflow';
 import type * as activities from '../activities.js';
 
 const {
@@ -35,7 +35,8 @@ export interface AutopilotOutput {
 
 export async function autopilotWorkflow(input: AutopilotInput): Promise<AutopilotOutput> {
   const { projectPath, projectSlug, runId, userContext = {}, suggestedFeatures = [] } = input;
-  const worktreePath = `${process.env.HOME}/.atelier/worktrees/${projectSlug}/${runId}`;
+  const home = process.env.HOME ?? '/root';
+  const worktreePath = `${home}/.atelier/worktrees/${projectSlug}/${runId}`;
 
   try {
     // Phase 1: Repository Analysis
