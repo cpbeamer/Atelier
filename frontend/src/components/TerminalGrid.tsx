@@ -76,25 +76,109 @@ export function TerminalGrid({ panes, connections = [], onPaneClose, onPaneAdd }
     return () => window.removeEventListener('resize', updatePositions);
   }, [panes]);
 
+  // Find the outer edge connection points between two rectangles
+  // This connects blocks like they "snap together" at their borders
+  const getEdgePoints = (from: PanePosition, to: PanePosition): { startX: number; startY: number; endX: number; endY: number } => {
+    const fromCenterX = from.x + from.width / 2;
+    const fromCenterY = from.y + from.height / 2;
+    const toCenterX = to.x + to.width / 2;
+    const toCenterY = to.y + to.height / 2;
+
+    const dx = toCenterX - fromCenterX;
+    const dy = toCenterY - fromCenterY;
+
+    let startX: number, startY: number, endX: number, endY: number;
+
+    // Determine which pair of edges are closest based on relative position
+    if (Math.abs(dx) > Math.abs(dy)) {
+      // Horizontal relationship: connect left/right edges at nearest Y
+      if (dx > 0) {
+        // 'to' is to the right: connect from right edge to left edge
+        startX = from.x + from.width;
+        endX = to.x;
+      } else {
+        startX = from.x;
+        endX = to.x + to.width;
+      }
+      // Snap to the Y center of the nearer rectangle
+      // Use the center Y that falls within both rectangles' Y ranges
+      const fromTop = from.y;
+      const fromBottom = from.y + from.height;
+      const toTop = to.y;
+      const toBottom = to.y + to.height;
+
+      // Find overlapping Y range
+      const overlapTop = Math.max(fromTop, toTop);
+      const overlapBottom = Math.min(fromBottom, toBottom);
+
+      if (overlapBottom > overlapTop) {
+        // Overlapping Y range: use midpoint of overlap
+        startY = (overlapTop + overlapBottom) / 2;
+        endY = startY;
+      } else {
+        // No overlap: use nearest edge Y
+        startY = fromCenterY;
+        endY = toCenterY;
+      }
+    } else {
+      // Vertical relationship: connect top/bottom edges at nearest X
+      if (dy > 0) {
+        // 'to' is below: connect from bottom edge to top edge
+        startY = from.y + from.height;
+        endY = to.y;
+      } else {
+        startY = from.y;
+        endY = to.y + to.height;
+      }
+      // Snap to the X center of the nearer rectangle
+      const fromLeft = from.x;
+      const fromRight = from.x + from.width;
+      const toLeft = to.x;
+      const toRight = to.x + to.width;
+
+      // Find overlapping X range
+      const overlapLeft = Math.max(fromLeft, toLeft);
+      const overlapRight = Math.min(fromRight, toRight);
+
+      if (overlapRight > overlapLeft) {
+        // Overlapping X range: use midpoint of overlap
+        startX = (overlapLeft + overlapRight) / 2;
+        endX = startX;
+      } else {
+        // No overlap: use nearest edge X
+        startX = fromCenterX;
+        endX = toCenterX;
+      }
+    }
+
+    return { startX, startY, endX, endY };
+  };
+
   const getConnectionPath = (from: PanePosition, to: PanePosition): string => {
-    const dx = to.centerX - from.centerX;
-    const dy = to.centerY - from.centerY;
+    const { startX, startY, endX, endY } = getEdgePoints(from, to);
+
+    // Calculate distance for curvature
+    const dx = endX - startX;
+    const dy = endY - startY;
     const distance = Math.sqrt(dx * dx + dy * dy);
-    const curvature = Math.min(distance * 0.25, 60);
+    const curvature = Math.min(distance * 0.2, 40);
 
     const perpX = -dy / distance * curvature;
     const perpY = dx / distance * curvature;
 
-    const midX = (from.centerX + to.centerX) / 2 + perpX;
-    const midY = (from.centerY + to.centerY) / 2 + perpY;
+    const midX = (startX + endX) / 2 + perpX;
+    const midY = (startY + endY) / 2 + perpY;
 
-    return `M ${from.centerX} ${from.centerY} Q ${midX} ${midY} ${to.centerX} ${to.centerY}`;
+    return `M ${startX} ${startY} Q ${midX} ${midY} ${endX} ${endY}`;
   };
 
-  const getMidpoint = (from: PanePosition, to: PanePosition) => ({
-    x: (from.centerX + to.centerX) / 2,
-    y: (from.centerY + to.centerY) / 2,
-  });
+  const getMidpoint = (from: PanePosition, to: PanePosition) => {
+    const { startX, startY, endX, endY } = getEdgePoints(from, to);
+    return {
+      x: (startX + endX) / 2,
+      y: (startY + endY) / 2,
+    };
+  };
 
   const getConnectionStatus = (fromId: string, toId: string) => {
     const fromPane = panes.find(p => p.id === fromId);
