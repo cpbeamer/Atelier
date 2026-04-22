@@ -46,7 +46,7 @@ docker-build:
 	docker compose build
 
 docker-up:
-	docker compose up -d
+	docker compose up -d --remove-orphans
 	@echo ""
 	@echo "Atelier is running!"
 	@echo "  Backend:  ws://localhost:3000"
