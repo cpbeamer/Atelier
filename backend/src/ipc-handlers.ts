@@ -99,7 +99,13 @@ register('settings.modelConfig:get', async () => {
   const rows = modelConfig.list() as any[];
   const result: any[] = [];
   for (const row of rows) {
-    const apiKey = await keytar.getPassword(SERVICE_NAME, keychainKey(row.id, 'apiKey'));
+    let apiKey: string | null = null;
+    try {
+      apiKey = await keytar.getPassword(SERVICE_NAME, keychainKey(row.id, 'apiKey'));
+    } catch (e) {
+      // keytar may fail if no keyring is available (e.g., headless environment)
+      console.warn('Failed to get API key from keyring:', e);
+    }
     let models: string[] = [];
     try {
       models = JSON.parse(row.models_json || '[]');

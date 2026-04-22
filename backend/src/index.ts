@@ -238,8 +238,10 @@ const httpServer = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ apiKey: apiKey || null }));
     } catch (err) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: String(err) }));
+      // keytar may fail if no keyring is available (e.g., headless environment)
+      console.warn('Failed to get API key from keyring:', err);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ apiKey: null }));
     }
     return;
   }

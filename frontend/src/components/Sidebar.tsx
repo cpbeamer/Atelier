@@ -50,6 +50,35 @@ export function Sidebar({ onProjectSelect, onWorkflowSelect, onSettingsClick, on
           console.error('Failed to add project:', e);
         }
       }
+    } else {
+      // Browser fallback: use file input
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.webkitdirectory = true;
+      input.onchange = async (e) => {
+        const files = (e.target as HTMLInputElement).files;
+        if (files && files.length > 0) {
+          // @ts-ignore - webkitRelativePath exists on FileList
+          const folderPath = files[0].webkitRelativePath?.split('/')[0] || 'project';
+          try {
+            const projectName = folderPath;
+            const id = `proj-${Date.now()}`;
+            const now = Date.now();
+            await invoke('db.addProject', { id, name: projectName, path: folderPath });
+            setProjects(prev => [...prev, {
+              id,
+              name: projectName,
+              path: folderPath,
+              created_at: now,
+              last_opened_at: now,
+              settings_json: '{}',
+            }]);
+          } catch (err) {
+            console.error('Failed to add project:', err);
+          }
+        }
+      };
+      input.click();
     }
   }
 
