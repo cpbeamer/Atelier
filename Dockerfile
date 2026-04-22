@@ -1,58 +1,37 @@
-FROM oven/bun:1-alpine AS base
+# Atelier - Dockerfile for containerized services
+#
+# Note: Backend and worker require native Node.js modules (node-pty, keytar)
+# that are difficult to build in Docker. For local development, use:
+#   docker compose up temporal postgres    # Start Temporal in Docker
+#   make dev                             # Run backend + worker on host
+#
+# For full Docker support, see docker-compose.yml services.
+
+FROM docker.io/oven/bun:1-debian AS base
 WORKDIR /app
-RUN apk add --no-cache git openssl python3 make g++ python3-dev
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git openssl python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
 
 # =====================
-# FRONTEND
+# BACKEND (requires native modules - run on host for best experience)
 # =====================
-FROM base AS frontend-builder
+FROM base AS backend
 WORKDIR /app
-COPY frontend/package.json frontend/bun.lock* ./
+COPY package.json bun.lock* ./
+COPY backend ./backend
+COPY frontend ./frontend
 RUN bun install --frozen-lockfile
-COPY frontend/ ./
-RUN bun run build
-
-FROM base
-WORKDIR /app
-COPY --from=frontend-builder /app/dist ./dist
-COPY --from=frontend-builder /app/node_modules ./node_modules
-COPY frontend/index.html ./
-COPY frontend/vite.config.ts ./
-EXPOSE 5173
-CMD ["bun", "run", "dev"]
-
-# =====================
-# BACKEND
-# =====================
-FROM base AS backend-builder
-WORKDIR /app
-COPY backend/package.json backend/bun.lock* ./
-RUN bun install --frozen-lockfile
-COPY backend/ ./
-RUN bun build src/index.ts --outdir dist
-
-FROM base
-WORKDIR /app
-COPY --from=backend-builder /app/dist ./dist
-COPY --from=backend-builder /app/node_modules ./node_modules
-COPY backend/ ./
 EXPOSE 3000 3001
-CMD ["bun", "run", "--cwd", ".", "dev"]
+CMD ["bun", "run", "--cwd", "backend", "src/index.ts"]
 
 # =====================
 # WORKER
 # =====================
-FROM base AS worker-builder
+FROM base AS worker
 WORKDIR /app
 COPY worker/package.json worker/bun.lock* ./
+COPY worker/src ./src
 RUN bun install --frozen-lockfile
-COPY worker/ ./
-RUN bun build src/worker.ts --outdir dist
-
-FROM base
-WORKDIR /app
-COPY --from=worker-builder /app/dist ./dist
-COPY --from=worker-builder /app/node_modules ./node_modules
-COPY worker/ ./
 EXPOSE 7233
-CMD ["bun", "run", "--cwd", ".", "start"]
+CMD ["bun", "run", "--cwd", "worker", "src/worker.ts"]

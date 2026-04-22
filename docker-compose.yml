@@ -1,75 +1,57 @@
-version: '3.9'
-
-x-common-env: &common-env
-  TEMPORAL_ADDRESS: temporal:7233
+# Atelier - Development Docker Setup
+#
+# This runs Temporal + PostgreSQL in Docker.
+# Backend and worker run on the host (where native modules work).
+#
+# Usage:
+#   docker compose up temporal postgres    # Start Temporal in Docker
+#   make docker-dev                        # Run backend + worker on host
 
 services:
-  # Temporal server (official image)
+  # PostgreSQL for Temporal
+  postgres:
+    image: docker.io/postgres:16-alpine
+    container_name: atelier-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=temporal
+      - POSTGRES_USER=temporal
+      - POSTGRES_PASSWORD=temporal
+      - POSTGRES_HOST_AUTH_METHOD=trust
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - atelier
+
+  # Temporal server
   temporal:
-    image: temporalio/auto-setup:1.25.0
+    image: docker.io/temporalio/auto-setup:1.25.0
     container_name: atelier-temporal
     ports:
       - "7466:7233"   # gRPC
       - "7467:8233"   # HTTP
       - "8466:8080"   # Web UI
     environment:
-      - DB_TYPE=sqlite
-      - DB_PATH=/var/temporal/data
-    volumes:
-      - temporal-data:/var/temporal/data
-    healthcheck:
-      test: ["CMD-SHELL", "curl -s http://localhost:8233/health || exit 1"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    networks:
-      - atelier
-
-  # Bun backend API server
-  backend:
-    build:
-      context: .
-      target: backend
-    container_name: atelier-backend
-    ports:
-      - "3000:3000"
-      - "3001:3001"
-    environment:
-      <<: *common-env
-      TEMPORAL_HOST: temporal
-      USE_EXTERNAL_TEMPORAL: "true"
-    working_dir: /app
-    volumes:
-      - ~/.atelier:/root/.atelier
-      - ./:/app
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_SEEDS=postgres
+      - POSTGRES_USER=temporal
+      - POSTGRES_PASSWORD=temporal
+      - POSTGRES_DB=temporal
     depends_on:
-      temporal:
+      postgres:
         condition: service_healthy
-    command: bun run --cwd /app/backend dev
-    networks:
-      - atelier
-
-  # Bun Temporal worker
-  worker:
-    build:
-      context: .
-      target: worker
-    container_name: atelier-worker
-    environment:
-      <<: *common-env
-    working_dir: /app
-    volumes:
-      - ~/.atelier:/root/.atelier
-      - ./:/app
-    depends_on:
-      temporal:
-        condition: service_healthy
-    command: bun run --cwd /app/worker start
     networks:
       - atelier
 
 volumes:
-  temporal-data:
+  postgres-data:
 
 networks:
   atelier:

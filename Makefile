@@ -56,6 +56,19 @@ docker-down:
 docker-logs:
 	docker compose logs -f
 
+docker-dev: docker-up
+	@echo "Starting backend and worker on host..."
+	@echo ""
+	cd backend && bun run src/index.ts &
+	cd worker && bun run src/worker.ts &
+	@echo ""
+	@echo "All services started!"
+	@echo "  Backend:  ws://localhost:3000"
+	@echo "  HTTP API: http://localhost:3001"
+	@echo "  Temporal: http://localhost:8466 (Web UI)"
+	@echo ""
+	@echo "Press Ctrl+C to stop all services"
+
 # Clean build artifacts
 clean:
 	cd frontend && rm -rf dist node_modules/.vite
