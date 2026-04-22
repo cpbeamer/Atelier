@@ -1,4 +1,8 @@
-.PHONY: dev install backend worker frontend clean docker-build docker-up docker-down
+.PHONY: dev install backend worker frontend clean docker-build docker-up docker-down docker-dev docker-logs
+
+# bun location
+BUN := $(HOME)/.bun/bin/bun
+export PATH := $(HOME)/.bun/bin:$(PATH)
 
 # Default target
 all: install dev
@@ -6,13 +10,13 @@ all: install dev
 # Install all dependencies
 install:
 	@echo "Installing root dependencies..."
-	 bun install
+	 $(BUN) install
 	@echo "Installing frontend dependencies..."
-	 cd frontend && bun install
+	 cd frontend && $(BUN) install
 	@echo "Installing backend dependencies..."
-	 cd backend && bun install
+	 cd backend && $(BUN) install
 	@echo "Installing worker dependencies..."
-	 cd worker && bun install
+	 cd worker && $(BUN) install
 
 # Run everything (backend + worker + frontend)
 dev: install
@@ -21,21 +25,21 @@ dev: install
 	@echo "NOTE: The worker must be started separately:"
 	@echo "  make worker"
 	@echo ""
-	cd backend && bun run dev &
-	cd frontend && bun run dev &
+	cd backend && $(BUN) run dev &
+	cd frontend && $(BUN) run dev &
 	wait
 
 # Start backend only
 backend:
-	cd backend && bun run dev
+	cd backend && $(BUN) run dev
 
 # Start worker only (requires backend to be running)
 worker:
-	cd worker && bun run start
+	cd worker && $(BUN) run start
 
 # Start frontend only
 frontend:
-	cd frontend && bun run dev
+	cd frontend && $(BUN) run dev
 
 # Docker commands
 docker-build:
@@ -59,8 +63,8 @@ docker-logs:
 docker-dev: docker-up
 	@echo "Starting backend and worker on host..."
 	@echo ""
-	cd backend && bun run src/index.ts &
-	cd worker && bun run src/worker.ts &
+	cd backend && TEMPORAL_ADDRESS=localhost:7466 USE_EXTERNAL_TEMPORAL=true $(BUN) run src/index.ts &
+	cd worker && TEMPORAL_ADDRESS=localhost:7466 $(BUN) run src/worker.ts &
 	@echo ""
 	@echo "All services started!"
 	@echo "  Backend:  ws://localhost:3000"
@@ -78,7 +82,7 @@ clean:
 
 # Build for production
 build:
-	bun run build
+	$(BUN) run build
 
 # Help
 help:

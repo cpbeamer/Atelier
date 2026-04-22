@@ -35,7 +35,8 @@ function startTemporal() {
   return temporal;
 }
 
-const temporalProcess = startTemporal();
+// Only start embedded Temporal if not using external server
+const temporalProcess = !process.env.USE_EXTERNAL_TEMPORAL ? startTemporal() : null;
 
 // WebSocket Server for UI
 const wss = new WebSocketServer({ port: PORT });
@@ -371,6 +372,6 @@ if (!process.env.USE_EXTERNAL_TEMPORAL) {
 }
 
 process.on('SIGINT', () => {
-  temporalProcess.kill();
+  if (temporalProcess) temporalProcess.kill();
   process.exit();
 });
