@@ -1,5 +1,5 @@
-import { spawn } from 'node:child_process';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { WebSocketServer } from 'ws';
 import http from 'node:http';
 import fs from 'node:fs';
@@ -363,8 +363,12 @@ httpServer.listen(3001, () => {
   console.log(`Milestone HTTP API running on http://localhost:3001`);
 });
 
-// Start Temporal sidecar
-startSidecar().catch(console.error);
+// Start Temporal sidecar (skip if using external server)
+if (!process.env.USE_EXTERNAL_TEMPORAL) {
+  startSidecar().catch(console.error);
+} else {
+  console.log('Using external Temporal server at', process.env.TEMPORAL_ADDRESS);
+}
 
 process.on('SIGINT', () => {
   temporalProcess.kill();

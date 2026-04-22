@@ -1,4 +1,4 @@
-.PHONY: dev install backend worker frontend clean
+.PHONY: dev install backend worker frontend clean docker-build docker-up docker-down
 
 # Default target
 all: install dev
@@ -37,6 +37,25 @@ worker:
 frontend:
 	cd frontend && bun run dev
 
+# Docker commands
+docker-build:
+	docker compose build
+
+docker-up:
+	docker compose up -d
+	@echo ""
+	@echo "Atelier is running!"
+	@echo "  Backend:  ws://localhost:3000"
+	@echo "  HTTP API: http://localhost:3001"
+	@echo "  Temporal: http://localhost:8466 (Web UI)"
+	@echo ""
+
+docker-down:
+	docker compose down
+
+docker-logs:
+	docker compose logs -f
+
 # Clean build artifacts
 clean:
 	cd frontend && rm -rf dist node_modules/.vite
@@ -53,15 +72,20 @@ help:
 	@echo "Atelier Makefile"
 	@echo ""
 	@echo "Targets:"
-	@echo "  make install   - Install all dependencies"
-	@echo "  make dev       - Start backend and frontend (worker must be started separately)"
+	@echo "  make install     - Install all dependencies"
+	@echo "  make dev        - Start backend and frontend (worker must be started separately)"
 	@echo "  make backend    - Start the backend server"
 	@echo "  make worker     - Start the Temporal worker"
 	@echo "  make frontend   - Start the frontend dev server"
-	@echo "  make build     - Build for production"
-	@echo "  make clean     - Clean build artifacts"
+	@echo "  make docker-up  - Start all services in Docker containers"
+	@echo "  make docker-down - Stop Docker containers"
+	@echo "  make build      - Build for production"
+	@echo "  make clean      - Clean build artifacts"
 	@echo ""
 	@echo "Quick start:"
 	@echo "  Terminal 1: make backend"
 	@echo "  Terminal 2: make worker"
 	@echo "  Terminal 3: make frontend"
+	@echo ""
+	@echo "Or with Docker:"
+	@echo "  make docker-up"

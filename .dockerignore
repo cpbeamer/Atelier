@@ -1,0 +1,13 @@
+.git
+.gitignore
+node_modules
+dist
+*.lock
+Dockerfile
+docker-compose.yml
+.dockerignore
+README.md
+*.md
+docs/
+electron/
+worker-python/
