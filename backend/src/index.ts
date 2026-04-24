@@ -1,10 +1,9 @@
 import path from 'node:path';
-import { spawn } from 'node:child_process';
 import { WebSocketServer } from 'ws';
 import http from 'node:http';
 import fs from 'node:fs';
 import { ptyManager } from './pty-manager.js';
-import { startSidecar } from './sidecar-lifecycle.js';
+import { startSidecar, stopSidecar } from './sidecar-lifecycle.js';
 import { milestones } from './db.js';
 import { loadProjectContext, saveProjectContext } from './project-context.js';
 import './ipc-handlers.js';
@@ -14,29 +13,6 @@ declare global {
 }
 
 const PORT = 3000;
-const TEMPORAL_PATH = path.join(process.env.HOME || '', '.atelier', 'temporal', 'temporal');
-
-// Start Temporal Sidecar
-function startTemporal() {
-  console.log('Starting Temporal sidecar...');
-  const temporal = spawn(TEMPORAL_PATH, [
-    'server', 'start-dev',
-    '--port', '7466',
-    '--http-port', '7467',
-    '--ui-port', '8466'
-  ], {
-    stdio: 'inherit'
-  });
-
-  temporal.on('error', (err) => {
-    console.error('Failed to start Temporal:', err);
-  });
-
-  return temporal;
-}
-
-// Only start embedded Temporal if not using external server
-const temporalProcess = !process.env.USE_EXTERNAL_TEMPORAL ? startTemporal() : null;
 
 // WebSocket Server for UI
 const wss = new WebSocketServer({ port: PORT });
@@ -373,7 +349,7 @@ if (!process.env.USE_EXTERNAL_TEMPORAL) {
   console.log('Using external Temporal server at', process.env.TEMPORAL_ADDRESS);
 }
 
-process.on('SIGINT', () => {
-  if (temporalProcess) temporalProcess.kill();
+process.on('SIGINT', async () => {
+  await stopSidecar().catch(() => {});
   process.exit();
 });
