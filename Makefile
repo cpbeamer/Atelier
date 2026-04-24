@@ -18,13 +18,23 @@ install:
 	@echo "Installing worker dependencies..."
 	 cd worker && $(BUN) install
 
-# Run everything (backend + worker + frontend)
-dev: install
-	@echo "Starting Atelier..."
-	@echo ""
-	@echo "NOTE: The worker must be started separately:"
-	@echo "  make worker"
-	@echo ""
+# Run everything (Temporal + backend + worker + frontend) — one command
+dev: install docker-up
+	@echo "Waiting for Temporal gRPC on localhost:7466..."
+	@bash -c 'for i in $$(seq 1 30); do \
+		if (echo > /dev/tcp/localhost/7466) >/dev/null 2>&1; then echo "Temporal is up."; exit 0; fi; \
+		sleep 1; \
+	done; echo "Temporal did not come up in 30s — continuing anyway"'
+	@echo "Starting backend, worker, frontend..."
+	cd backend && TEMPORAL_ADDRESS=localhost:7466 USE_EXTERNAL_TEMPORAL=true $(BUN) run dev &
+	cd worker && TEMPORAL_ADDRESS=localhost:7466 $(BUN) run start &
+	cd frontend && $(BUN) run dev &
+	wait
+
+# Local-only dev without Docker (backend spawns its own Temporal sidecar)
+dev-local: install
+	@echo "Starting Atelier without Docker..."
+	@echo "NOTE: The worker must be started separately: make worker"
 	cd backend && $(BUN) run dev &
 	cd frontend && $(BUN) run dev &
 	wait

@@ -8,9 +8,9 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function run() {
-  const connection = await NativeConnection.connect({
-    address: '127.0.0.1:7466',
-  });
+  const address = process.env.TEMPORAL_ADDRESS || '127.0.0.1:7466';
+  console.log(`[worker] connecting to Temporal at ${address}`);
+  const connection = await NativeConnection.connect({ address });
 
   const worker = await Worker.create({
     connection,

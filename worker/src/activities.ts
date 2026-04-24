@@ -110,6 +110,18 @@ export interface PushInput {
   tickets: ScopedTicket[];
 }
 
+export interface SetupWorkspaceInput {
+  projectPath: string;
+  projectSlug: string;
+  runId: string;
+}
+
+export interface SetupWorkspaceOutput {
+  worktreePath: string;
+  branch: string;
+  isWorktree: boolean;
+}
+
 export interface AgentNotification {
   agentId: string;
   agentName: string;
@@ -124,9 +136,28 @@ export interface AgentCompletion {
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 
 async function readFile(filePath: string): Promise<string> {
   return fs.promises.readFile(filePath, 'utf-8');
+}
+
+interface ExecResult { code: number; stdout: string; stderr: string; }
+
+function execCmd(command: string, args: string[], cwd?: string, timeoutMs = 60 * 60 * 1000): Promise<ExecResult> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(command, args, { cwd, env: process.env });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => {
+      proc.kill('SIGKILL');
+      reject(new Error(`${command} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    proc.stdout?.on('data', (d) => { stdout += d.toString(); });
+    proc.stderr?.on('data', (d) => { stderr += d.toString(); });
+    proc.on('error', (err) => { clearTimeout(timer); reject(err); });
+    proc.on('exit', (code) => { clearTimeout(timer); resolve({ code: code ?? 0, stdout, stderr }); });
+  });
 }
 
 async function listDir(dirPath: string): Promise<string[]> {
@@ -203,48 +234,23 @@ async function runTerminalAgentViaPty(
   });
 }
 
-export async function callMiniMax(system: string, user: string): Promise<string> {
-  // Get API key from env var or backend
-  let apiKey = process.env.MINIMAX_API_KEY;
-  if (!apiKey) {
-    try {
-      const response = await fetch('http://localhost:3001/api/settings/apiKey/minimax');
-      if (response.ok) {
-        const data = await response.json();
-        apiKey = data.apiKey;
-      }
-    } catch {
-      // Backend not reachable
-    }
+export async function callClaude(system: string, user: string, cwd?: string): Promise<string> {
+  const prompt = `${system}\n\n---\n\n${user}`;
+  const claudeBin = process.env.CLAUDE_BIN || 'claude';
+  const result = await execCmd(
+    claudeBin,
+    ['-p', prompt, '--dangerously-skip-permissions'],
+    cwd,
+    30 * 60 * 1000,
+  );
+  if (result.code !== 0) {
+    throw new Error(`claude CLI exited with code ${result.code}: ${result.stderr || result.stdout}`);
   }
-  if (!apiKey) {
-    throw new Error('MiniMax API key not configured. Add it in Settings.');
-  }
-
-  const response = await fetch('https://api.minimax.chat/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'MiniMax/Abab6.5s-chat',
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
-      temperature: 0.7,
-    }),
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`MiniMax API error: ${response.status} - ${text}`);
-  }
-
-  const data = await response.json();
-  return data.choices[0].message.content;
+  return result.stdout;
 }
+
+// Legacy alias — preserved so any lingering references keep compiling.
+export const callMiniMax = callClaude;
 
 export async function spawnAgent(
   agentName: string,
@@ -322,7 +328,7 @@ Format your response as JSON with fields: repoStructure, currentFeatures, gaps, 
 `;
 
   const persona = await loadPersona(projectPath, 'researcher');
-  const result = await callMiniMax(persona, researchPrompt);
+  const result = await callClaude(persona, researchPrompt, projectPath);
 
   // Parse the result
   try {
@@ -457,7 +463,7 @@ For EACH ticket, provide:
 Be specific. Generic plans are useless.
 `;
 
-  const result = await callMiniMax(persona, prompt);
+  const result = await callClaude(persona, prompt, projectPath);
 
   // Try to parse as JSON, fall back to structured parsing
   try {
@@ -489,15 +495,19 @@ export async function implementCode(input: ImplementInput): Promise<ImplementOut
   const persona = await loadPersona(projectPath, 'developer');
 
   let prompt = `
+You are working inside the worktree at: ${worktreePath}
+This IS your current working directory. You have full file-edit and shell access.
+
 Ticket: ${ticket.title}
 ${ticket.description}
 
 Technical plan:
 ${ticket.technicalPlan}
 
-Files to change: ${ticket.filesToChange.join(', ')}
+Suggested files to change: ${ticket.filesToChange.join(', ') || '(decide from context)'}
 
-Worktree: ${worktreePath}
+Acceptance criteria:
+${ticket.acceptanceCriteria.map((c) => `- ${c}`).join('\n')}
 `;
 
   if (feedback && feedback.length > 0) {
@@ -510,108 +520,151 @@ ${feedback.join('\n')}\n`;
 ${testFeedback.join('\n')}\n`;
   }
 
-  const result = await callMiniMax(persona, prompt);
+  prompt += `\n\nREQUIREMENTS:
+- Actually edit the files — do not just describe changes. Use the Edit/Write tools.
+- Keep changes focused on this ticket.
+- After editing, list every file you changed on its own line, prefixed with "FILE_CHANGED: ".
+- End your response with a short summary block starting with "SUMMARY:".`;
 
-  // Developer outputs the actual code changes - parse and apply them
-  // For now, return the LLM output as code
+  const result = await callClaude(persona, prompt, worktreePath);
+
+  // Extract files the agent reported editing.
+  const filesChanged = Array.from(
+    new Set(
+      Array.from(result.matchAll(/^FILE_CHANGED:\s*(.+)$/gm)).map((m) => m[1].trim()),
+    ),
+  );
+
   return {
     code: result,
-    filesChanged: ticket.filesToChange,
+    filesChanged: filesChanged.length > 0 ? filesChanged : ticket.filesToChange,
   };
 }
 
-export async function reviewCode(input: ReviewInput): Promise<ReviewResult> {
-  const { implementation, ticket } = input;
+export async function reviewCode(input: ReviewInput & { worktreePath?: string }): Promise<ReviewResult> {
+  const { implementation, ticket, worktreePath } = input;
 
   const persona = await loadPersona(process.cwd(), 'code-reviewer');
 
   const prompt = `
-Review this code for ticket: ${ticket.title}
-
-CODE:
-\`\`\`
-${implementation.code}
-\`\`\`
-
-ACCEPTANCE CRITERIA:
-${ticket.acceptanceCriteria.map(c => `- ${c}`).join('\n')}
+Review the changes for ticket: ${ticket.title}
 
 FILES CHANGED: ${implementation.filesChanged.join(', ')}
+You can read the actual files on disk to verify the implementation matches the description.
 
-Review against the criteria. Return JSON:
-{ "approved": true/false, "comments": ["specific comment 1", "specific comment 2"] }
+ACCEPTANCE CRITERIA:
+${ticket.acceptanceCriteria.map((c) => `- ${c}`).join('\n')}
+
+DEVELOPER OUTPUT:
+${implementation.code.slice(0, 4000)}
+
+Read the changed files, evaluate them against the acceptance criteria, and respond with ONLY a JSON object:
+{ "approved": true|false, "comments": ["specific, actionable comment", ...] }
 `;
 
-  const result = await callMiniMax(persona, prompt);
+  const result = await callClaude(persona, prompt, worktreePath);
 
   try {
-    return JSON.parse(result);
+    // Extract the JSON object if there's surrounding prose.
+    const match = result.match(/\{[\s\S]*\}/);
+    return match ? JSON.parse(match[0]) : JSON.parse(result);
   } catch {
     return { approved: false, comments: ['Could not parse review output'] };
   }
 }
 
-export async function testCode(input: TestInput): Promise<TestResult> {
-  const { implementation, ticket } = input;
+export async function testCode(input: TestInput & { worktreePath?: string }): Promise<TestResult> {
+  const { implementation, ticket, worktreePath } = input;
 
   const persona = await loadPersona(process.cwd(), 'tester');
 
   const prompt = `
-Test this implementation for ticket: ${ticket.title}
+You are in the project worktree${worktreePath ? ` at ${worktreePath}` : ''}.
 
-CODE:
-\`\`\`
-${implementation.code}
-\`\`\`
+Ticket: ${ticket.title}
+FILES CHANGED: ${implementation.filesChanged.join(', ')}
 
 ACCEPTANCE CRITERIA:
-${ticket.acceptanceCriteria.map(c => `- ${c}`).join('\n')}
+${ticket.acceptanceCriteria.map((c) => `- ${c}`).join('\n')}
 
-FILES: ${implementation.filesChanged.join(', ')}
+Verify the implementation:
+1. Detect the project's test command (package.json scripts, pytest, go test, cargo test, etc.)
+2. Run it. If the project has no tests, write minimal smoke tests for the acceptance criteria and run them.
+3. Record which criteria pass and which fail.
 
-Write and run tests to verify each acceptance criterion.
-Report pass/fail for each criterion.
-
-Return JSON:
-{ "allPassed": true/false, "failures": ["criterion that failed", ...] }
+Respond with ONLY a JSON object:
+{ "allPassed": true|false, "failures": ["criterion that failed or error message", ...] }
 `;
 
-  const result = await callMiniMax(persona, prompt);
+  const result = await callClaude(persona, prompt, worktreePath);
 
   try {
-    return JSON.parse(result);
+    const match = result.match(/\{[\s\S]*\}/);
+    return match ? JSON.parse(match[0]) : JSON.parse(result);
   } catch {
     return { allPassed: false, failures: ['Could not parse test output'] };
   }
 }
 
-export async function pushChanges(input: PushInput): Promise<PushResult> {
-  const { worktreePath, projectPath, tickets } = input;
+export async function setupWorkspace(input: SetupWorkspaceInput): Promise<SetupWorkspaceOutput> {
+  const { projectPath, projectSlug, runId } = input;
+  const home = process.env.HOME ?? '/root';
+  const worktreePath = path.join(home, '.atelier', 'worktrees', projectSlug, runId);
+  const branch = `atelier/autopilot/${runId}`;
 
-  const persona = await loadPersona(projectPath, 'pusher');
+  const isGitRepo = (await execCmd('git', ['rev-parse', '--git-dir'], projectPath)).code === 0;
 
-  const prompt = `
-Worktree: ${worktreePath}
-Project: ${projectPath}
-
-Tickets completed:
-${tickets.map(t => `- ${t.title}: ${t.description}`).join('\n')}
-
-1. Create branch: \`atelier/autopilot/${Date.now()}\`
-2. Commit all changes with a meaningful message
-3. Push to remote
-
-Return JSON:
-{ "branch": "branch-name", "commitSha": "abc123", "prUrl": "optional-pr-url" }
-`;
-
-  const result = await callMiniMax(persona, prompt);
-
-  try {
-    return JSON.parse(result);
-  } catch {
-    return { branch: `atelier/autopilot/${Date.now()}`, commitSha: 'unknown' };
+  if (!isGitRepo) {
+    const init = await execCmd('git', ['init', '-b', 'main'], projectPath);
+    if (init.code !== 0) throw new Error(`git init failed: ${init.stderr}`);
+    // Ensure there's at least one commit so worktree add works.
+    const hasCommit = (await execCmd('git', ['rev-parse', 'HEAD'], projectPath)).code === 0;
+    if (!hasCommit) {
+      await execCmd('git', ['add', '-A'], projectPath);
+      await execCmd('git', ['commit', '--allow-empty', '-m', 'atelier: initial commit'], projectPath);
+    }
   }
+
+  fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
+  // Clean any stale worktree directory.
+  if (fs.existsSync(worktreePath)) {
+    await execCmd('git', ['worktree', 'remove', '--force', worktreePath], projectPath);
+  }
+  const add = await execCmd('git', ['worktree', 'add', '-b', branch, worktreePath], projectPath);
+  if (add.code !== 0) throw new Error(`git worktree add failed: ${add.stderr}`);
+
+  return { worktreePath, branch, isWorktree: true };
+}
+
+export async function pushChanges(input: PushInput): Promise<PushResult> {
+  const { worktreePath, tickets } = input;
+
+  const stage = await execCmd('git', ['add', '-A'], worktreePath);
+  if (stage.code !== 0) throw new Error(`git add failed: ${stage.stderr}`);
+
+  const status = await execCmd('git', ['status', '--porcelain'], worktreePath);
+  const headBranch = await execCmd('git', ['rev-parse', '--abbrev-ref', 'HEAD'], worktreePath);
+  const branch = headBranch.stdout.trim() || `atelier/autopilot/${Date.now()}`;
+
+  if (!status.stdout.trim()) {
+    const sha = await execCmd('git', ['rev-parse', 'HEAD'], worktreePath);
+    return { branch, commitSha: sha.stdout.trim() || 'no-changes' };
+  }
+
+  const ticketLines = tickets.map((t) => `- ${t.title}`).join('\n');
+  const commitMsg = `atelier: autopilot run\n\n${ticketLines}`;
+  const commit = await execCmd('git', ['commit', '-m', commitMsg], worktreePath);
+  if (commit.code !== 0) throw new Error(`git commit failed: ${commit.stderr}`);
+
+  const sha = await execCmd('git', ['rev-parse', 'HEAD'], worktreePath);
+
+  // Best-effort push; no remote or no auth is not fatal for a local run.
+  const push = await execCmd('git', ['push', '-u', 'origin', branch], worktreePath);
+  if (push.code !== 0) {
+    console.warn(`[pushChanges] git push failed (non-fatal): ${push.stderr.trim()}`);
+  }
+
+  return { branch, commitSha: sha.stdout.trim() };
 }
 
 export async function notifyAgentStart(input: AgentNotification): Promise<void> {
