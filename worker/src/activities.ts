@@ -160,6 +160,67 @@ function execCmd(command: string, args: string[], cwd?: string, timeoutMs = 60 *
   });
 }
 
+// M2.7 wraps reasoning in <think>...</think> tags; strip these before parsing
+// structured output so hidden content never smuggles through file-edit markers
+// or fake JSON blocks.
+function stripThinking(output: string): string {
+  return output.replace(/<think>[\s\S]*?<\/think>/g, '');
+}
+
+interface FileEdit { kind: 'write' | 'delete'; path: string; contents?: string; }
+
+function parseFileEdits(raw: string): FileEdit[] {
+  const output = stripThinking(raw);
+  const edits: FileEdit[] = [];
+  const writeRe = /^===\s*BEGIN FILE:\s*(.+?)\s*===\r?\n([\s\S]*?)\r?\n===\s*END FILE\s*===/gm;
+  let m: RegExpExecArray | null;
+  while ((m = writeRe.exec(output)) !== null) {
+    edits.push({ kind: 'write', path: m[1].trim(), contents: m[2] });
+  }
+  const deleteRe = /^===\s*DELETE FILE:\s*(.+?)\s*===/gm;
+  while ((m = deleteRe.exec(output)) !== null) {
+    edits.push({ kind: 'delete', path: m[1].trim() });
+  }
+  return edits;
+}
+
+async function applyFileEdits(worktreePath: string, edits: FileEdit[]): Promise<string[]> {
+  const rootAbs = path.resolve(worktreePath);
+  const applied: string[] = [];
+  for (const edit of edits) {
+    const target = path.resolve(rootAbs, edit.path);
+    if (target !== rootAbs && !target.startsWith(rootAbs + path.sep)) {
+      throw new Error(`Refused to touch path outside worktree: ${edit.path}`);
+    }
+    if (edit.kind === 'write') {
+      await fs.promises.mkdir(path.dirname(target), { recursive: true });
+      await fs.promises.writeFile(target, edit.contents ?? '', 'utf-8');
+      applied.push(edit.path);
+    } else {
+      await fs.promises.rm(target, { force: true });
+      applied.push(edit.path);
+    }
+  }
+  return applied;
+}
+
+async function readFilesForContext(worktreePath: string, paths: string[], maxBytesPer = 20_000): Promise<string> {
+  const rootAbs = path.resolve(worktreePath);
+  const chunks: string[] = [];
+  for (const rel of paths) {
+    const abs = path.resolve(rootAbs, rel);
+    if (!abs.startsWith(rootAbs + path.sep)) continue;
+    try {
+      const buf = await fs.promises.readFile(abs, 'utf-8');
+      const trimmed = buf.length > maxBytesPer ? buf.slice(0, maxBytesPer) + `\n... [truncated ${buf.length - maxBytesPer} bytes]` : buf;
+      chunks.push(`--- ${rel} ---\n${trimmed}`);
+    } catch {
+      chunks.push(`--- ${rel} ---\n(file does not exist yet)`);
+    }
+  }
+  return chunks.join('\n\n');
+}
+
 async function listDir(dirPath: string): Promise<string[]> {
   try {
     const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
@@ -234,23 +295,56 @@ async function runTerminalAgentViaPty(
   });
 }
 
-export async function callClaude(system: string, user: string, cwd?: string): Promise<string> {
-  const prompt = `${system}\n\n---\n\n${user}`;
-  const claudeBin = process.env.CLAUDE_BIN || 'claude';
-  const result = await execCmd(
-    claudeBin,
-    ['-p', prompt, '--dangerously-skip-permissions'],
-    cwd,
-    30 * 60 * 1000,
-  );
-  if (result.code !== 0) {
-    throw new Error(`claude CLI exited with code ${result.code}: ${result.stderr || result.stdout}`);
-  }
-  return result.stdout;
+const MINIMAX_ENDPOINT = 'https://api.minimax.io/v1/text/chatcompletion_v2';
+const MINIMAX_MODEL = process.env.MINIMAX_MODEL || 'MiniMax-M2.7';
+
+async function getMinimaxKey(): Promise<string> {
+  const envKey = process.env.MINIMAX_API_KEY;
+  if (envKey) return envKey;
+  try {
+    const response = await fetch('http://localhost:3001/api/settings/apiKey/minimax');
+    if (response.ok) {
+      const data = await response.json();
+      if (data.apiKey) return data.apiKey;
+    }
+  } catch { /* backend unreachable */ }
+  throw new Error('MiniMax API key not configured. Set MINIMAX_API_KEY or add it in Settings.');
 }
 
-// Legacy alias — preserved so any lingering references keep compiling.
-export const callMiniMax = callClaude;
+export async function callMiniMax(system: string, user: string, _cwd?: string): Promise<string> {
+  const apiKey = await getMinimaxKey();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5 * 60 * 1000);
+  try {
+    const response = await fetch(MINIMAX_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: MINIMAX_MODEL,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+      }),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new Error(`MiniMax API error ${response.status}: ${text}`);
+    }
+    const data: any = await response.json();
+    const content = data?.choices?.[0]?.message?.content;
+    if (typeof content !== 'string') {
+      throw new Error(`MiniMax API returned unexpected shape: ${JSON.stringify(data).slice(0, 500)}`);
+    }
+    return stripThinking(content);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export async function spawnAgent(
   agentName: string,
@@ -328,7 +422,7 @@ Format your response as JSON with fields: repoStructure, currentFeatures, gaps, 
 `;
 
   const persona = await loadPersona(projectPath, 'researcher');
-  const result = await callClaude(persona, researchPrompt, projectPath);
+  const result = await callMiniMax(persona, researchPrompt, projectPath);
 
   // Parse the result
   try {
@@ -463,7 +557,7 @@ For EACH ticket, provide:
 Be specific. Generic plans are useless.
 `;
 
-  const result = await callClaude(persona, prompt, projectPath);
+  const result = await callMiniMax(persona, prompt, projectPath);
 
   // Try to parse as JSON, fall back to structured parsing
   try {
@@ -494,51 +588,62 @@ export async function implementCode(input: ImplementInput): Promise<ImplementOut
 
   const persona = await loadPersona(projectPath, 'developer');
 
-  let prompt = `
-You are working inside the worktree at: ${worktreePath}
-This IS your current working directory. You have full file-edit and shell access.
+  const suggested = ticket.filesToChange.filter((p) => p && p.trim().length > 0);
+  const existingContext = suggested.length > 0
+    ? await readFilesForContext(worktreePath, suggested)
+    : '(no suggested files — decide based on the ticket)';
 
+  let prompt = `
 Ticket: ${ticket.title}
 ${ticket.description}
 
 Technical plan:
 ${ticket.technicalPlan}
 
-Suggested files to change: ${ticket.filesToChange.join(', ') || '(decide from context)'}
-
 Acceptance criteria:
 ${ticket.acceptanceCriteria.map((c) => `- ${c}`).join('\n')}
+
+Suggested files to change: ${suggested.length > 0 ? suggested.join(', ') : '(decide based on context)'}
+
+Current file contents (worktree rooted at ${worktreePath}):
+${existingContext}
 `;
 
   if (feedback && feedback.length > 0) {
-    prompt += `\n\nCODE REVIEW FEEDBACK to address:
-${feedback.join('\n')}\n`;
+    prompt += `\n\nCODE REVIEW FEEDBACK to address:\n${feedback.join('\n')}\n`;
   }
-
   if (testFeedback && testFeedback.length > 0) {
-    prompt += `\n\nTEST FAILURES to fix:
-${testFeedback.join('\n')}\n`;
+    prompt += `\n\nTEST FAILURES to fix:\n${testFeedback.join('\n')}\n`;
   }
 
-  prompt += `\n\nREQUIREMENTS:
-- Actually edit the files — do not just describe changes. Use the Edit/Write tools.
-- Keep changes focused on this ticket.
-- After editing, list every file you changed on its own line, prefixed with "FILE_CHANGED: ".
-- End your response with a short summary block starting with "SUMMARY:".`;
+  prompt += `
 
-  const result = await callClaude(persona, prompt, worktreePath);
+OUTPUT PROTOCOL — READ CAREFULLY
+You cannot edit files directly. Emit file writes and deletes using these exact markers and nothing else will be applied:
 
-  // Extract files the agent reported editing.
-  const filesChanged = Array.from(
-    new Set(
-      Array.from(result.matchAll(/^FILE_CHANGED:\s*(.+)$/gm)).map((m) => m[1].trim()),
-    ),
-  );
+=== BEGIN FILE: path/relative/to/worktree.ext ===
+<full file contents — this REPLACES the file>
+=== END FILE ===
 
-  return {
-    code: result,
-    filesChanged: filesChanged.length > 0 ? filesChanged : ticket.filesToChange,
-  };
+=== DELETE FILE: path/relative/to/worktree.ext ===
+
+Rules:
+- Paths are relative to the worktree root. No absolute paths, no "..".
+- Always emit the FULL intended contents of every file you change (not a diff, not a snippet).
+- You may emit multiple BEGIN FILE / END FILE blocks. Emit DELETE FILE markers only when a file must be removed.
+- Outside the markers you may write brief reasoning, but it will be ignored.
+- End with a one-line summary prefixed "SUMMARY: ".`;
+
+  const result = await callMiniMax(persona, prompt, worktreePath);
+  const edits = parseFileEdits(result);
+  if (edits.length === 0) {
+    throw new Error(
+      `Developer produced no file edits for ticket ${ticket.id}. Output preview: ${result.slice(0, 500)}`,
+    );
+  }
+  const applied = await applyFileEdits(worktreePath, edits);
+
+  return { code: result, filesChanged: applied };
 }
 
 export async function reviewCode(input: ReviewInput & { worktreePath?: string }): Promise<ReviewResult> {
@@ -546,26 +651,29 @@ export async function reviewCode(input: ReviewInput & { worktreePath?: string })
 
   const persona = await loadPersona(process.cwd(), 'code-reviewer');
 
+  const fileContents = worktreePath && implementation.filesChanged.length > 0
+    ? await readFilesForContext(worktreePath, implementation.filesChanged)
+    : '(no files to read)';
+
   const prompt = `
 Review the changes for ticket: ${ticket.title}
-
-FILES CHANGED: ${implementation.filesChanged.join(', ')}
-You can read the actual files on disk to verify the implementation matches the description.
+${ticket.description}
 
 ACCEPTANCE CRITERIA:
 ${ticket.acceptanceCriteria.map((c) => `- ${c}`).join('\n')}
 
-DEVELOPER OUTPUT:
-${implementation.code.slice(0, 4000)}
+FILES CHANGED: ${implementation.filesChanged.join(', ')}
 
-Read the changed files, evaluate them against the acceptance criteria, and respond with ONLY a JSON object:
+Current file contents on disk:
+${fileContents}
+
+Evaluate against the acceptance criteria. Respond with ONLY a JSON object (no prose):
 { "approved": true|false, "comments": ["specific, actionable comment", ...] }
 `;
 
-  const result = await callClaude(persona, prompt, worktreePath);
+  const result = stripThinking(await callMiniMax(persona, prompt, worktreePath));
 
   try {
-    // Extract the JSON object if there's surrounding prose.
     const match = result.match(/\{[\s\S]*\}/);
     return match ? JSON.parse(match[0]) : JSON.parse(result);
   } catch {
@@ -573,37 +681,81 @@ Read the changed files, evaluate them against the acceptance criteria, and respo
   }
 }
 
-export async function testCode(input: TestInput & { worktreePath?: string }): Promise<TestResult> {
-  const { implementation, ticket, worktreePath } = input;
+interface TestCommand { cmd: string; args: string[]; label: string; }
 
-  const persona = await loadPersona(process.cwd(), 'tester');
+async function detectTestCommand(cwd: string): Promise<TestCommand | null> {
+  const exists = (f: string) => fs.existsSync(path.join(cwd, f));
 
-  const prompt = `
-You are in the project worktree${worktreePath ? ` at ${worktreePath}` : ''}.
-
-Ticket: ${ticket.title}
-FILES CHANGED: ${implementation.filesChanged.join(', ')}
-
-ACCEPTANCE CRITERIA:
-${ticket.acceptanceCriteria.map((c) => `- ${c}`).join('\n')}
-
-Verify the implementation:
-1. Detect the project's test command (package.json scripts, pytest, go test, cargo test, etc.)
-2. Run it. If the project has no tests, write minimal smoke tests for the acceptance criteria and run them.
-3. Record which criteria pass and which fail.
-
-Respond with ONLY a JSON object:
-{ "allPassed": true|false, "failures": ["criterion that failed or error message", ...] }
-`;
-
-  const result = await callClaude(persona, prompt, worktreePath);
-
-  try {
-    const match = result.match(/\{[\s\S]*\}/);
-    return match ? JSON.parse(match[0]) : JSON.parse(result);
-  } catch {
-    return { allPassed: false, failures: ['Could not parse test output'] };
+  if (exists('package.json')) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(cwd, 'package.json'), 'utf-8'));
+      const testScript: string | undefined = pkg.scripts?.test;
+      const isNoopTest = !testScript || /no test specified/i.test(testScript);
+      if (!isNoopTest) {
+        if (exists('bun.lockb') || exists('bun.lock')) return { cmd: 'bun', args: ['run', 'test'], label: 'bun run test' };
+        if (exists('pnpm-lock.yaml')) return { cmd: 'pnpm', args: ['test'], label: 'pnpm test' };
+        if (exists('yarn.lock')) return { cmd: 'yarn', args: ['test'], label: 'yarn test' };
+        return { cmd: 'npm', args: ['test', '--', '--silent'], label: 'npm test' };
+      }
+    } catch { /* fall through */ }
   }
+  if (exists('pyproject.toml') || exists('pytest.ini') || exists('setup.cfg')) {
+    return { cmd: 'pytest', args: ['-q'], label: 'pytest' };
+  }
+  if (exists('Cargo.toml')) return { cmd: 'cargo', args: ['test', '--quiet'], label: 'cargo test' };
+  if (exists('go.mod')) return { cmd: 'go', args: ['test', './...'], label: 'go test ./...' };
+  return null;
+}
+
+function extractFailureLines(output: string, max = 15): string[] {
+  const patterns = [/\bfail\b/i, /\berror\b/i, /✗|×|✘/, /AssertionError/i, /Expected/i, /Exception/i];
+  const lines = output.split('\n');
+  const hits: string[] = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (patterns.some((p) => p.test(trimmed))) {
+      hits.push(trimmed.slice(0, 300));
+      if (hits.length >= max) break;
+    }
+  }
+  return hits;
+}
+
+export async function testCode(input: TestInput & { worktreePath?: string }): Promise<TestResult> {
+  const { ticket, worktreePath } = input;
+  const cwd = worktreePath || process.cwd();
+
+  const testCmd = await detectTestCommand(cwd);
+  if (!testCmd) {
+    return {
+      allPassed: false,
+      failures: [
+        `No test command detected in ${cwd}. Expected one of: package.json scripts.test, pyproject.toml, Cargo.toml, go.mod.`,
+      ],
+    };
+  }
+
+  const result = await execCmd(testCmd.cmd, testCmd.args, cwd, 15 * 60 * 1000);
+  if (result.code === 0) {
+    return { allPassed: true, failures: [] };
+  }
+
+  const combined = `${result.stdout}\n${result.stderr}`;
+  const extracted = extractFailureLines(combined);
+  const tail = combined.split('\n').slice(-20).join('\n').trim();
+  const failures = extracted.length > 0
+    ? extracted
+    : [`${testCmd.label} exited with code ${result.code}`, ...tail.split('\n').slice(-8)];
+
+  return {
+    allPassed: false,
+    failures: [
+      `command: ${testCmd.label} (exit ${result.code})`,
+      `ticket: ${ticket.id}`,
+      ...failures,
+    ],
+  };
 }
 
 export async function setupWorkspace(input: SetupWorkspaceInput): Promise<SetupWorkspaceOutput> {
@@ -667,29 +819,60 @@ export async function pushChanges(input: PushInput): Promise<PushResult> {
   return { branch, commitSha: sha.stdout.trim() };
 }
 
+async function emitAgentEvent(id: string, event: { kind: string; [k: string]: any }): Promise<void> {
+  try {
+    await fetch('http://localhost:3001/api/agent/event', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, event }),
+    });
+  } catch { /* backend not reachable — non-fatal */ }
+}
+
 export async function notifyAgentStart(input: AgentNotification): Promise<void> {
-  // Notify frontend via HTTP callback to show this agent's terminal
+  await emitAgentEvent(input.agentId, {
+    kind: 'init',
+    sessionId: input.agentId,
+    model: MINIMAX_MODEL,
+    cwd: '',
+    tools: [],
+  });
+  await emitAgentEvent(input.agentId, {
+    kind: 'text',
+    text: `▶ ${input.agentName} starting…`,
+  });
   try {
     await fetch('http://localhost:3001/api/agent/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
     });
-  } catch {
-    // Backend not reachable - non-fatal
-  }
+  } catch { /* non-fatal */ }
 }
 
 export async function notifyAgentComplete(input: AgentCompletion): Promise<void> {
+  await emitAgentEvent(input.agentId, {
+    kind: 'text',
+    text: input.status === 'completed' ? '✓ done' : `✗ error${input.output ? `: ${input.output}` : ''}`,
+  });
+  await emitAgentEvent(input.agentId, {
+    kind: 'result',
+    success: input.status === 'completed',
+    turns: 1,
+    durationMs: 0,
+    text: input.output ?? '',
+  });
   try {
     await fetch('http://localhost:3001/api/agent/complete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
     });
-  } catch {
-    // Non-fatal
-  }
+  } catch { /* non-fatal */ }
+}
+
+export async function emitAgentText(input: { agentId: string; text: string }): Promise<void> {
+  await emitAgentEvent(input.agentId, { kind: 'text', text: input.text });
 }
 
 const BACKEND_URL = 'http://localhost:3001';

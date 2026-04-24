@@ -65,7 +65,8 @@ function migrate() {
       name TEXT NOT NULL,
       base_url TEXT NOT NULL,
       enabled INTEGER DEFAULT 0,
-      models_json TEXT DEFAULT '[]'
+      models_json TEXT DEFAULT '[]',
+      selected_model TEXT
     );
 
     CREATE TABLE IF NOT EXISTS project_context (
@@ -75,13 +76,25 @@ function migrate() {
     );
   `);
 
+  // Add selected_model column to existing DBs (idempotent — wrapped because
+  // ADD COLUMN is not guarded by IF NOT EXISTS in older SQLite versions).
+  try {
+    db.exec(`ALTER TABLE model_config ADD COLUMN selected_model TEXT`);
+  } catch {
+    // Column already exists — expected on subsequent boots.
+  }
+
   // Seed MiniMax and OpenRouter if no providers exist
   const count = getDb().prepare('SELECT COUNT(*) as c FROM model_config').get() as { c: number };
   if (count.c === 0) {
     getDb().prepare(`INSERT INTO model_config (id, name, base_url, enabled, models_json) VALUES (?,?,?,?,?)`)
-      .run('minimax', 'MiniMax', 'https://api.minimax.chat/v1', 0, '["MiniMax/Abab6.5s-chat","MiniMax/Abab6.5-chat"]');
+      .run('minimax', 'MiniMax', 'https://api.minimax.io/v1', 1, '["MiniMax-M2.7","MiniMax-M2.7-highspeed"]');
     getDb().prepare(`INSERT INTO model_config (id, name, base_url, enabled, models_json) VALUES (?,?,?,?,?)`)
       .run('openrouter', 'OpenRouter', 'https://openrouter.ai/api/v1', 0, '["anthropic/claude-3.5-sonnet","openai/gpt-4o"]');
+  } else {
+    // Migrate existing minimax row to M2.7 endpoint/models (idempotent).
+    getDb().prepare(`UPDATE model_config SET base_url = ?, models_json = ? WHERE id = 'minimax'`)
+      .run('https://api.minimax.io/v1', '["MiniMax-M2.7","MiniMax-M2.7-highspeed"]');
   }
 }
 
@@ -132,6 +145,8 @@ export const modelConfig = {
     getDb().prepare('UPDATE model_config SET enabled=? WHERE id=?').run(enabled, id),
   setModels: (id: string, modelsJson: string) =>
     getDb().prepare('UPDATE model_config SET models_json=? WHERE id=?').run(modelsJson, id),
+  setSelectedModel: (id: string, selectedModel: string | null) =>
+    getDb().prepare('UPDATE model_config SET selected_model=? WHERE id=?').run(selectedModel, id),
 };
 
 export const projectContext = {

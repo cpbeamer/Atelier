@@ -207,6 +207,21 @@ class AgentStreamManager {
     return this.agents.get(id)?.events ?? [];
   }
 
+  /**
+   * Push an event into the stream for an agent ID that has no spawned child —
+   * used by workflow activities to surface M2.7 progress in the matching UI pane.
+   */
+  pushSynthetic(id: string, event: AgentEvent) {
+    let instance = this.agents.get(id);
+    if (!instance) {
+      instance = { id, child: null as unknown as ChildProcess, events: [], done: false };
+      this.agents.set(id, instance);
+    }
+    instance.events.push(event);
+    if (instance.events.length > MAX_BUFFER) instance.events.shift();
+    this.emitter.emit(`event:${id}`, event);
+  }
+
   isRunning(id: string): boolean {
     const a = this.agents.get(id);
     return !!a && !a.done;

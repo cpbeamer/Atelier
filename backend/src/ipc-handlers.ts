@@ -136,14 +136,18 @@ register('settings.modelConfig:get', async () => {
       enabled: row.enabled === 1,
       configured: !!apiKey,
       models,
+      selectedModel: row.selected_model ?? (models[0] ?? null),
     });
   }
   return result;
 });
 
-register('settings.modelConfig:set', async (opts: { id: string; enabled: boolean; models: string[] }) => {
+register('settings.modelConfig:set', async (opts: { id: string; enabled: boolean }) => {
   modelConfig.setEnabled(opts.id, opts.enabled ? 1 : 0);
-  modelConfig.setModels(opts.id, JSON.stringify(opts.models));
+});
+
+register('settings.modelConfig:selectModel', async (opts: { id: string; model: string }) => {
+  modelConfig.setSelectedModel(opts.id, opts.model);
 });
 
 register('settings.apiKey:get', async (opts: { providerId: string }) => {

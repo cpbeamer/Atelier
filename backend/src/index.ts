@@ -368,6 +368,29 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // POST /api/agent/event  — push a synthetic agent-event (from worker activities)
+  if (req.method === 'POST' && url.pathname === '/api/agent/event') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const { id, event } = JSON.parse(body);
+        if (!id || !event || typeof event.kind !== 'string') {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'id and event.kind required' }));
+          return;
+        }
+        agentStreamManager.pushSynthetic(id, { ...event, ts: event.ts ?? Date.now() });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+    });
+    return;
+  }
+
   // POST /api/agent/complete
   if (req.method === 'POST' && url.pathname === '/api/agent/complete') {
     let body = '';

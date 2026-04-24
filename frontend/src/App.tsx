@@ -47,23 +47,11 @@ function App() {
     return () => clearInterval(i);
   }, []);
 
-  /** Spawn a structured Claude agent for each live pane so the UI streams real events. */
-  const spawnStructuredAgents = useCallback((paneList: TerminalPaneConfig[], cwd?: string) => {
-    for (const p of paneList) {
-      send('agent-start', {
-        id: p.id,
-        task: `You are the ${p.agentName}. Acknowledge your role, describe your first step in one short paragraph, then stop.`,
-        cwd,
-      });
-    }
-  }, []);
-
   const startAutopilot = useCallback(async (project: Project) => {
     setAutopilotError(null);
-    const live = AUTOPILOT_PANES.map((p) => ({ ...p, status: 'running' as const }));
+    const live = AUTOPILOT_PANES.map((p) => ({ ...p, status: 'waiting' as const }));
     setPanes(live);
     setWorkflowActive(true);
-    spawnStructuredAgents(live, project.path);
     try {
       const { runId } = await invoke<{ runId: string }>('autopilot.start', {
         projectPath: project.path,
@@ -79,7 +67,7 @@ function App() {
           : `Could not start autopilot workflow: ${msg}`,
       );
     }
-  }, [spawnStructuredAgents]);
+  }, []);
 
   const handleProjectSelect = useCallback((project: Project) => {
     setActiveProject(project);
@@ -98,7 +86,6 @@ function App() {
     ];
     setPanes(live);
     setWorkflowActive(true);
-    spawnStructuredAgents(live, activeProject?.path);
     try {
       const { runId } = await invoke<{ runId: string }>('workflow.start', {
         name: workflow.name,
@@ -109,7 +96,7 @@ function App() {
       const msg = e instanceof Error ? e.message : String(e);
       setAutopilotError(`Could not start workflow: ${msg}`);
     }
-  }, [activeProject, spawnStructuredAgents]);
+  }, [activeProject]);
 
   const handlePaneClose = useCallback((id: string) => {
     send('agent-kill', { id });
@@ -125,12 +112,7 @@ function App() {
       status: 'running',
     };
     setPanes((prev) => [...prev, newPane]);
-    send('agent-start', {
-      id: newId,
-      task: 'Say hello, describe your working directory, then stop.',
-      cwd: activeProject?.path,
-    });
-  }, [activeProject]);
+  }, []);
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-[#0a0b0d] text-[#e8e6e0]">

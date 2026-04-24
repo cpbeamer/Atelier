@@ -10,6 +10,7 @@ interface ModelProvider {
   enabled: boolean;
   configured: boolean;
   models: string[];
+  selectedModel: string | null;
 }
 
 interface Props {
@@ -47,14 +48,12 @@ export function SettingsModal({ isOpen, onClose }: Props) {
     setProviders(updated);
     const p = updated.find(x => x.id === id);
     if (!p) return;
-    await invoke('settings.modelConfig:set', { id, enabled: p.enabled, models: p.models });
+    await invoke('settings.modelConfig:set', { id, enabled: p.enabled });
   }
 
   async function handleModelSelect(providerId: string, model: string) {
-    const p = providers.find(x => x.id === providerId);
-    if (!p) return;
-    await invoke('settings.modelConfig:set', { id: providerId, enabled: p.enabled, models: [model] });
-    setProviders(prev => prev.map(x => x.id === providerId ? { ...x, models: [model] } : x));
+    setProviders(prev => prev.map(x => x.id === providerId ? { ...x, selectedModel: model } : x));
+    await invoke('settings.modelConfig:selectModel', { id: providerId, model });
   }
 
   async function handleSaveApiKey() {
@@ -118,7 +117,7 @@ export function SettingsModal({ isOpen, onClose }: Props) {
                   <div className="mb-3">
                     <label className="text-xs text-muted-foreground block mb-1">Model</label>
                     <select
-                      value={provider.models[0]}
+                      value={provider.selectedModel ?? provider.models[0]}
                       onChange={(e) => handleModelSelect(provider.id, e.target.value)}
                       className="w-full bg-background border border-border rounded px-2 py-1.5 text-sm"
                     >
