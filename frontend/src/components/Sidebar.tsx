@@ -15,6 +15,7 @@ interface Props {
 export function Sidebar({ onProjectSelect, onWorkflowSelect, onSettingsClick, onAutopilotClick, activeProject }: Props) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [workflows, setWorkflows] = useState<Array<{ name: string; language: 'typescript' | 'python' }>>([]);
+  const [addError, setAddError] = useState<string | null>(null);
 
   useEffect(() => {
     loadProjects();
@@ -30,55 +31,35 @@ export function Sidebar({ onProjectSelect, onWorkflowSelect, onSettingsClick, on
   }
 
   async function handleAddProject() {
-    if (window.electronAPI) {
-      const folderPath = await window.electronAPI.openFolder();
-      if (folderPath) {
-        try {
-          const projectName = folderPath.split('/').pop() || 'New Project';
-          const id = `proj-${Date.now()}`;
-          const now = Date.now();
-          await invoke('db.addProject', { id, name: projectName, path: folderPath });
-          setProjects(prev => [...prev, {
-            id,
-            name: projectName,
-            path: folderPath,
-            created_at: now,
-            last_opened_at: now,
-            settings_json: '{}',
-          }]);
-        } catch (e) {
-          console.error('Failed to add project:', e);
-        }
-      }
-    } else {
-      // Browser fallback: use file input
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.webkitdirectory = true;
-      input.onchange = async (e) => {
-        const files = (e.target as HTMLInputElement).files;
-        if (files && files.length > 0) {
-          // @ts-ignore - webkitRelativePath exists on FileList
-          const folderPath = files[0].webkitRelativePath?.split('/')[0] || 'project';
-          try {
-            const projectName = folderPath;
-            const id = `proj-${Date.now()}`;
-            const now = Date.now();
-            await invoke('db.addProject', { id, name: projectName, path: folderPath });
-            setProjects(prev => [...prev, {
-              id,
-              name: projectName,
-              path: folderPath,
-              created_at: now,
-              last_opened_at: now,
-              settings_json: '{}',
-            }]);
-          } catch (err) {
-            console.error('Failed to add project:', err);
-          }
-        }
-      };
-      input.click();
+    setAddError(null);
+    if (!window.electronAPI) {
+      setAddError('Adding a project requires the Electron app — the browser cannot resolve absolute folder paths.');
+      return;
+    }
+    let folderPath: string | null;
+    try {
+      folderPath = await window.electronAPI.openFolder();
+    } catch (e) {
+      setAddError(e instanceof Error ? `Could not open folder picker: ${e.message}` : 'Could not open folder picker.');
+      return;
+    }
+    if (!folderPath) return;
+    try {
+      const projectName = folderPath.split('/').pop() || 'New Project';
+      const id = `proj-${Date.now()}`;
+      const now = Date.now();
+      await invoke('db.addProject', { id, name: projectName, path: folderPath });
+      setProjects(prev => [...prev, {
+        id,
+        name: projectName,
+        path: folderPath!,
+        created_at: now,
+        last_opened_at: now,
+        settings_json: '{}',
+      }]);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setAddError(msg.includes('UNIQUE') ? 'This project has already been added.' : `Failed to add project: ${msg}`);
     }
   }
 
@@ -111,6 +92,12 @@ export function Sidebar({ onProjectSelect, onWorkflowSelect, onSettingsClick, on
             <Plus className="w-3 h-3" />
           </button>
         </div>
+
+        {addError && (
+          <div className="mx-2 mb-2 px-2 py-1.5 rounded border border-red-900 bg-red-950 text-xs text-red-300">
+            {addError}
+          </div>
+        )}
 
         {projects.map((project) => (
           <button

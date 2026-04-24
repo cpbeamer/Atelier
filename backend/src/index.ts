@@ -95,8 +95,14 @@ wss.on('connection', (ws) => {
         handlers[msg.type](msg.payload).then((result: any) => {
           ws.send(JSON.stringify({ type: msg.type + ':response', id: msg.id, payload: result }));
         }).catch((err: any) => {
-          ws.send(JSON.stringify({ type: msg.type + ':response', id: msg.id, error: err.message }));
+          ws.send(JSON.stringify({ type: msg.type + ':response', id: msg.id, error: err?.message || String(err) }));
         });
+      } else {
+        ws.send(JSON.stringify({
+          type: msg.type + ':response',
+          id: msg.id,
+          error: `No IPC handler registered for '${msg.type}'`,
+        }));
       }
     }
   });
