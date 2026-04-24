@@ -1,0 +1,58 @@
+# Atelier - Development Docker Setup
+#
+# This runs Temporal + PostgreSQL in Docker.
+# Backend and worker run on the host (where native modules work).
+#
+# Usage:
+#   docker compose up temporal postgres    # Start Temporal in Docker
+#   make docker-dev                        # Run backend + worker on host
+
+services:
+  # PostgreSQL for Temporal
+  postgres:
+    image: docker.io/postgres:16-alpine
+    container_name: atelier-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=temporal
+      - POSTGRES_USER=temporal
+      - POSTGRES_PASSWORD=temporal
+      - POSTGRES_HOST_AUTH_METHOD=trust
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - atelier
+
+  # Temporal server
+  temporal:
+    image: docker.io/temporalio/auto-setup:1.25.0
+    container_name: atelier-temporal
+    ports:
+      - "7466:7233"   # gRPC
+      - "7467:8233"   # HTTP
+      - "8466:8080"   # Web UI
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_SEEDS=postgres
+      - POSTGRES_USER=temporal
+      - POSTGRES_PASSWORD=temporal
+      - POSTGRES_DB=temporal
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - atelier
+
+volumes:
+  postgres-data:
+
+networks:
+  atelier:
+    driver: bridge

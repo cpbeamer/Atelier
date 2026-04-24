@@ -1,114 +1,54 @@
 // frontend/src/components/TerminalPane.tsx
-import { useEffect, useRef, useState } from 'react';
-import { Terminal } from 'xterm';
-import { FitAddon } from 'xterm-addon-fit';
-import { WebLinksAddon } from 'xterm-addon-web-links';
-import 'xterm/css/xterm.css';
+//
+// Composite pane: shows the structured AgentTranscript by default, with a
+// toggle to drop into a raw xterm.js view for the underlying PTY stream.
+
+import { useState } from 'react';
+import { AgentTranscript } from './AgentTranscript';
+import { RawTerminalView } from './RawTerminalView';
+
+type ViewMode = 'structured' | 'raw';
 
 interface Props {
-  paneId: string;
+  agentId: string;
   isActive: boolean;
+  /** If this agent also has a backing PTY stream, supply its id to enable the raw view. */
+  ptyId?: string;
+  defaultView?: ViewMode;
 }
 
-export function TerminalPane({ paneId, isActive }: Props) {
-  const terminalRef = useRef<HTMLDivElement>(null);
-  const xtermRef = useRef<Terminal | null>(null);
-  const fitAddonRef = useRef<FitAddon | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
-  const [agentStatus, setAgentStatus] = useState<'waiting' | 'running' | 'exited' | 'killed'>('waiting');
-
-  useEffect(() => {
-    if (!terminalRef.current || xtermRef.current) return;
-
-    const term = new Terminal({
-      theme: { background: '#0a0a0a', foreground: '#ffffff' },
-      fontFamily: 'Consolas, "Courier New", monospace',
-      fontSize: 14,
-      cursorBlink: true,
-    });
-
-    const fitAddon = new FitAddon();
-    const webLinksAddon = new WebLinksAddon();
-    term.loadAddon(fitAddon);
-    term.loadAddon(webLinksAddon);
-    term.open(terminalRef.current);
-    fitAddon.fit();
-
-    xtermRef.current = term;
-    fitAddonRef.current = fitAddon;
-
-    // Connect to WebSocket for PTY output
-    const ws = new WebSocket('ws://localhost:3000');
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      ws.send(JSON.stringify({ type: 'pty-subscribe', payload: { id: paneId } }));
-    };
-
-    ws.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
-      if (msg.type === 'pty-output' && msg.id === paneId) {
-        term.write(msg.data);
-      } else if (msg.type === 'pty-exit' && msg.id === paneId) {
-        term.writeln('\r\n[Process Exited]');
-      }
-    };
-
-    term.onData((data) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'pty-input', payload: { id: paneId, data } }));
-      }
-    });
-
-    const handleResize = () => fitAddon.fit();
-    window.addEventListener('resize', handleResize);
-
-    return () => {
-      window.removeEventListener('resize', handleResize);
-      ws.close();
-      term.dispose();
-      xtermRef.current = null;
-    };
-  }, [paneId]);
-
-  // Subscribe to agent lifecycle events
-  useEffect(() => {
-    const ws = new WebSocket('ws://localhost:3000');
-
-    const handleMessage = (event: MessageEvent) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === 'agent:started' && msg.payload.agentId === paneId) {
-          setAgentStatus('running');
-          if (xtermRef.current) {
-            xtermRef.current.writeln('\r\n[Agent started]\r\n');
-          }
-        } else if (msg.type === 'agent:completed' && msg.payload.agentId === paneId) {
-          setAgentStatus('exited');
-          if (xtermRef.current) {
-            xtermRef.current.writeln('\r\n[Agent completed]\r\n');
-          }
-        }
-      } catch {
-        // Ignore
-      }
-    };
-
-    ws.addEventListener('message', handleMessage);
-    return () => ws.close();
-  }, [paneId]);
-
-  // Trigger agent start when pane becomes active
-  useEffect(() => {
-    if (isActive && xtermRef.current) {
-      xtermRef.current.clear();
-      xtermRef.current.writeln('[Starting Claude Code...]\r\n');
-      setAgentStatus('waiting');
-      // PTY spawning is handled via IPC in a later task
-    }
-  }, [isActive, paneId]);
+export function TerminalPane({ agentId, isActive, ptyId, defaultView = 'structured' }: Props) {
+  const [view, setView] = useState<ViewMode>(defaultView);
+  const canToggle = !!ptyId;
 
   return (
-    <div ref={terminalRef} className="w-full h-full" />
+    <div className="relative h-full w-full">
+      {view === 'structured' ? (
+        <AgentTranscript agentId={agentId} isActive={isActive} />
+      ) : (
+        ptyId && <RawTerminalView ptyId={ptyId} />
+      )}
+
+      {canToggle && (
+        <div className="absolute top-2 right-2 z-10 flex border border-[#1e2024] bg-[#0d0f12]/80 backdrop-blur-sm">
+          <button
+            onClick={() => setView('structured')}
+            className={`px-2 py-1 text-[10px] font-display uppercase tracking-[0.25em] transition-colors ${
+              view === 'structured' ? 'bg-[#1e2024] text-[#d4ff00]' : 'text-[#6b6b68] hover:text-[#d4d2cc]'
+            }`}
+          >
+            feed
+          </button>
+          <button
+            onClick={() => setView('raw')}
+            className={`px-2 py-1 text-[10px] font-display uppercase tracking-[0.25em] transition-colors ${
+              view === 'raw' ? 'bg-[#1e2024] text-[#d4ff00]' : 'text-[#6b6b68] hover:text-[#d4d2cc]'
+            }`}
+          >
+            raw
+          </button>
+        </div>
+      )}
+    </div>
   );
 }

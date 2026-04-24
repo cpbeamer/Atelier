@@ -95,11 +95,34 @@ register('sidecar.start', async () => { await startSidecar(); });
 register('sidecar.stop', async () => { await stopSidecar(); });
 
 // Model config handlers
+async function keytarWithTimeout<T>(op: Promise<T>, ms = 2000): Promise<T> {
+  return await Promise.race([
+    op,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error('keyring timeout')), ms)
+    ),
+  ]);
+}
+
 register('settings.modelConfig:get', async () => {
-  const rows = modelConfig.list() as any[];
+  let rows: any[] = [];
+  try {
+    rows = modelConfig.list() as any[];
+  } catch (e) {
+    console.error('settings.modelConfig:get: DB list failed:', e);
+    return [];
+  }
   const result: any[] = [];
   for (const row of rows) {
-    const apiKey = await keytar.getPassword(SERVICE_NAME, keychainKey(row.id, 'apiKey'));
+    let apiKey: string | null = null;
+    try {
+      apiKey = await keytarWithTimeout(
+        keytar.getPassword(SERVICE_NAME, keychainKey(row.id, 'apiKey'))
+      );
+    } catch (e) {
+      // keytar may fail or hang if no keyring is available (headless, no gnome-keyring, etc.)
+      console.warn(`Failed to get API key for ${row.id} from keyring:`, e);
+    }
     let models: string[] = [];
     try {
       models = JSON.parse(row.models_json || '[]');
@@ -113,37 +136,69 @@ register('settings.modelConfig:get', async () => {
       enabled: row.enabled === 1,
       configured: !!apiKey,
       models,
+      selectedModel: row.selected_model ?? (models[0] ?? null),
     });
   }
   return result;
 });
 
-register('settings.modelConfig:set', async (opts: { id: string; enabled: boolean; models: string[] }) => {
+register('settings.modelConfig:set', async (opts: { id: string; enabled: boolean }) => {
   modelConfig.setEnabled(opts.id, opts.enabled ? 1 : 0);
-  modelConfig.setModels(opts.id, JSON.stringify(opts.models));
+});
+
+register('settings.modelConfig:selectModel', async (opts: { id: string; model: string }) => {
+  modelConfig.setSelectedModel(opts.id, opts.model);
 });
 
 register('settings.apiKey:get', async (opts: { providerId: string }) => {
-  return keytar.getPassword(SERVICE_NAME, keychainKey(opts.providerId, 'apiKey'));
+  try {
+    return await keytarWithTimeout(
+      keytar.getPassword(SERVICE_NAME, keychainKey(opts.providerId, 'apiKey'))
+    );
+  } catch (e) {
+    console.warn('settings.apiKey:get failed:', e);
+    return null;
+  }
 });
 
 register('settings.apiKey:set', async (opts: { providerId: string; apiKey: string }) => {
   if (!opts.apiKey || !opts.apiKey.trim()) {
     throw new Error('API key cannot be empty');
   }
-  await keytar.setPassword(SERVICE_NAME, keychainKey(opts.providerId, 'apiKey'), opts.apiKey.trim());
+  try {
+    await keytarWithTimeout(
+      keytar.setPassword(SERVICE_NAME, keychainKey(opts.providerId, 'apiKey'), opts.apiKey.trim())
+    );
+  } catch (e) {
+    throw new Error(
+      'Could not save API key: no OS keyring is available. On Linux, install and run gnome-keyring or kwallet.'
+    );
+  }
 });
 
 register('settings.apiKey:delete', async (opts: { providerId: string }) => {
-  await keytar.deletePassword(SERVICE_NAME, keychainKey(opts.providerId, 'apiKey'));
+  try {
+    await keytarWithTimeout(
+      keytar.deletePassword(SERVICE_NAME, keychainKey(opts.providerId, 'apiKey'))
+    );
+  } catch (e) {
+    console.warn('settings.apiKey:delete failed:', e);
+  }
 });
 
-register('autopilot.start', async (opts: { projectPath: string; projectSlug: string; suggestedFeatures?: string[] }) => {
-  const connection = await Connection.connect({ address: '127.0.0.1:7466' });
-  const client = new Client({ connection });
+const TEMPORAL_ADDRESS = process.env.TEMPORAL_ADDRESS || '127.0.0.1:7466';
+let temporalClient: Client | null = null;
+async function getTemporalClient(): Promise<Client> {
+  if (temporalClient) return temporalClient;
+  const connection = await Connection.connect({ address: TEMPORAL_ADDRESS });
+  temporalClient = new Client({ connection });
+  return temporalClient;
+}
 
+register('autopilot.start', async (opts: { projectPath: string; projectSlug: string; suggestedFeatures?: string[] }) => {
+  const client = await getTemporalClient();
   const runId = `autopilot-${Date.now()}`;
-  const handle = await client.workflow.start('autopilot', {
+  const handle = await client.workflow.start('autopilotWorkflow', {
     args: [{
       projectPath: opts.projectPath,
       projectSlug: opts.projectSlug,
@@ -158,10 +213,9 @@ register('autopilot.start', async (opts: { projectPath: string; projectSlug: str
 });
 
 register('greenfield.start', async (opts: { projectPath: string; projectSlug: string; userRequest: string }) => {
-  const connection = await Connection.connect({ address: '127.0.0.1:7466' });
-  const client = new Client({ connection });
+  const client = await getTemporalClient();
   const runId = `greenfield-${Date.now()}`;
-  const handle = await client.workflow.start('greenfield', {
+  const handle = await client.workflow.start('greenfieldWorkflow', {
     args: [{
       projectPath: opts.projectPath,
       projectSlug: opts.projectSlug,
@@ -170,6 +224,18 @@ register('greenfield.start', async (opts: { projectPath: string; projectSlug: st
     }],
     taskQueue: 'atelier-default-ts',
     workflowId: `greenfield-${opts.projectSlug}-${runId}`,
+  });
+  return { runId, workflowId: handle.workflowId };
+});
+
+register('workflow.start', async (opts: { name: string; input?: unknown }) => {
+  const client = await getTemporalClient();
+  const runId = `${opts.name}-${Date.now()}`;
+  const workflowType = opts.name.endsWith('Workflow') ? opts.name : `${opts.name}Workflow`;
+  const handle = await client.workflow.start(workflowType, {
+    args: [opts.input ?? {}],
+    taskQueue: 'atelier-default-ts',
+    workflowId: `${opts.name}-${runId}`,
   });
   return { runId, workflowId: handle.workflowId };
 });

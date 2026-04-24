@@ -37,11 +37,18 @@ function createWindow() {
 }
 
 // Handle folder picker
-ipcMain.handle('dialog:openFolder', async () => {
-  const result = await dialog.showOpenDialog({
-    properties: ['openDirectory']
-  });
-  return result.filePaths[0] || null;
+ipcMain.handle('dialog:openFolder', async (event) => {
+  try {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const result = win
+      ? await dialog.showOpenDialog(win, { properties: ['openDirectory'] })
+      : await dialog.showOpenDialog({ properties: ['openDirectory'] });
+    if (result.canceled) return null;
+    return result.filePaths[0] || null;
+  } catch (err) {
+    console.error('[Electron] dialog:openFolder failed:', err);
+    throw err;
+  }
 });
 
 app.whenReady().then(() => {

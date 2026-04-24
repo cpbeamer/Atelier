@@ -1,10 +1,10 @@
-import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { WebSocketServer } from 'ws';
 import http from 'node:http';
 import fs from 'node:fs';
 import { ptyManager } from './pty-manager.js';
-import { startSidecar } from './sidecar-lifecycle.js';
+import { agentStreamManager, type AgentEvent } from './agent-stream.js';
+import { startSidecar, stopSidecar } from './sidecar-lifecycle.js';
 import { milestones } from './db.js';
 import { loadProjectContext, saveProjectContext } from './project-context.js';
 import './ipc-handlers.js';
@@ -14,28 +14,6 @@ declare global {
 }
 
 const PORT = 3000;
-const TEMPORAL_PATH = path.join(process.env.HOME || '', '.atelier', 'temporal', 'temporal');
-
-// Start Temporal Sidecar
-function startTemporal() {
-  console.log('Starting Temporal sidecar...');
-  const temporal = spawn(TEMPORAL_PATH, [
-    'server', 'start-dev',
-    '--port', '7466',
-    '--http-port', '7467',
-    '--ui-port', '8466'
-  ], {
-    stdio: 'inherit'
-  });
-
-  temporal.on('error', (err) => {
-    console.error('Failed to start Temporal:', err);
-  });
-
-  return temporal;
-}
-
-const temporalProcess = startTemporal();
 
 // WebSocket Server for UI
 const wss = new WebSocketServer({ port: PORT });
@@ -45,6 +23,10 @@ const ptySubscriptions = new Map<string, Set<WebSocket>>();
 
 // Track which PTY IDs have registered handlers (to avoid duplicate registration)
 const ptyHandlersRegistered = new Set<string>();
+
+// Structured-agent subscriptions: maps agent ID to set of subscribed WebSocket clients
+const agentSubscriptions = new Map<string, Set<WebSocket>>();
+const agentHandlersRegistered = new Set<string>();
 
 // Broadcast to all connected WebSocket clients
 function broadcastToUI(type: string, payload: any) {
@@ -101,6 +83,44 @@ wss.on('connection', (ws) => {
       }
 
       console.log(`Client subscribed to PTY: ${id}`);
+    } else if (msg.type === 'agent-subscribe') {
+      const { id } = msg.payload;
+      if (!agentSubscriptions.has(id)) agentSubscriptions.set(id, new Set());
+      agentSubscriptions.get(id)!.add(ws);
+
+      // Replay any buffered scrollback first so late subscribers don't miss events.
+      for (const event of agentStreamManager.getScrollback(id)) {
+        ws.send(JSON.stringify({ type: 'agent-event', payload: { id, event } }));
+      }
+
+      if (!agentHandlersRegistered.has(id)) {
+        agentStreamManager.onEvent(id, (event: AgentEvent) => {
+          const subs = agentSubscriptions.get(id);
+          if (!subs) return;
+          const wire = JSON.stringify({ type: 'agent-event', payload: { id, event } });
+          subs.forEach((c) => c.readyState === c.OPEN && c.send(wire));
+          if (event.kind === 'exit') {
+            agentHandlersRegistered.delete(id);
+          }
+        });
+        agentHandlersRegistered.add(id);
+      }
+    } else if (msg.type === 'agent-start') {
+      const { id, persona, task, cwd, model } = msg.payload;
+      agentStreamManager
+        .start({ id, persona, task, cwd, model })
+        .catch((err) => {
+          const subs = agentSubscriptions.get(id);
+          if (subs) {
+            const wire = JSON.stringify({
+              type: 'agent-event',
+              payload: { id, event: { kind: 'stderr', text: `start failed: ${err?.message ?? err}`, ts: Date.now() } },
+            });
+            subs.forEach((c) => c.readyState === c.OPEN && c.send(wire));
+          }
+        });
+    } else if (msg.type === 'agent-kill') {
+      agentStreamManager.kill(msg.payload.id);
     } else if (msg.type === 'pty-spawn') {
       const { id, command, args, cwd } = msg.payload;
       console.log(`Spawning PTY ${id}: ${command} ${args.join(' ')}`);
@@ -118,8 +138,14 @@ wss.on('connection', (ws) => {
         handlers[msg.type](msg.payload).then((result: any) => {
           ws.send(JSON.stringify({ type: msg.type + ':response', id: msg.id, payload: result }));
         }).catch((err: any) => {
-          ws.send(JSON.stringify({ type: msg.type + ':response', id: msg.id, error: err.message }));
+          ws.send(JSON.stringify({ type: msg.type + ':response', id: msg.id, error: err?.message || String(err) }));
         });
+      } else {
+        ws.send(JSON.stringify({
+          type: msg.type + ':response',
+          id: msg.id,
+          error: `No IPC handler registered for '${msg.type}'`,
+        }));
       }
     }
   });
@@ -132,6 +158,10 @@ wss.on('connection', (ws) => {
       if (subscribers.size === 0) {
         ptySubscriptions.delete(id);
       }
+    }
+    for (const [id, subscribers] of agentSubscriptions) {
+      subscribers.delete(ws);
+      if (subscribers.size === 0) agentSubscriptions.delete(id);
     }
   });
 });
@@ -237,8 +267,10 @@ const httpServer = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ apiKey: apiKey || null }));
     } catch (err) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: String(err) }));
+      // keytar may fail if no keyring is available (e.g., headless environment)
+      console.warn('Failed to get API key from keyring:', err);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ apiKey: null }));
     }
     return;
   }
@@ -336,6 +368,29 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // POST /api/agent/event  — push a synthetic agent-event (from worker activities)
+  if (req.method === 'POST' && url.pathname === '/api/agent/event') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const { id, event } = JSON.parse(body);
+        if (!id || !event || typeof event.kind !== 'string') {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'id and event.kind required' }));
+          return;
+        }
+        agentStreamManager.pushSynthetic(id, { ...event, ts: event.ts ?? Date.now() });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+    });
+    return;
+  }
+
   // POST /api/agent/complete
   if (req.method === 'POST' && url.pathname === '/api/agent/complete') {
     let body = '';
@@ -363,10 +418,14 @@ httpServer.listen(3001, () => {
   console.log(`Milestone HTTP API running on http://localhost:3001`);
 });
 
-// Start Temporal sidecar
-startSidecar().catch(console.error);
+// Start Temporal sidecar (skip if using external server)
+if (!process.env.USE_EXTERNAL_TEMPORAL) {
+  startSidecar().catch(console.error);
+} else {
+  console.log('Using external Temporal server at', process.env.TEMPORAL_ADDRESS);
+}
 
-process.on('SIGINT', () => {
-  temporalProcess.kill();
+process.on('SIGINT', async () => {
+  await stopSidecar().catch(() => {});
   process.exit();
 });
