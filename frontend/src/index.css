@@ -1,86 +1,172 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Martian+Mono:wght@300;400;500;600;700&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --color-border: var(--border);
-  --color-input: var(--input);
-  --color-ring: var(--ring);
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  /* Control-room palette: warm ink base, chartreuse/amber/cyan accents. */
+  --color-ink: #0a0b0d;
+  --color-ink-panel: #101114;
+  --color-ink-inner: #0d0f12;
+  --color-ink-deep: #060708;
+  --color-hair: #1e2024;
+  --color-hair-bright: #2a2d32;
 
-  --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
+  --color-text: #e8e6e0;
+  --color-text-dim: #d4d2cc;
+  --color-text-muted: #8a8d92;
+  --color-text-faint: #6b6b68;
+  --color-text-hint: #4a4d52;
 
-  --color-secondary: var(--secondary);
-  --color-secondary-foreground: var(--secondary-foreground);
+  --color-live: #d4ff00;
+  --color-tool: #ffb84a;
+  --color-system: #63d4ff;
+  --color-signal: #c89cff;
+  --color-error: #ff6b5a;
 
-  --color-destructive: var(--destructive);
-  --color-destructive-foreground: var(--destructive-foreground);
+  /* Shadcn-compat tokens remapped to the new palette so legacy components inherit it. */
+  --color-background: var(--color-ink);
+  --color-foreground: var(--color-text);
+  --color-border: var(--color-hair);
+  --color-input: var(--color-hair);
+  --color-ring: var(--color-live);
+  --color-card: var(--color-ink-panel);
+  --color-card-foreground: var(--color-text);
+  --color-popover: var(--color-ink-panel);
+  --color-popover-foreground: var(--color-text);
+  --color-primary: var(--color-live);
+  --color-primary-foreground: var(--color-ink);
+  --color-secondary: var(--color-ink-panel);
+  --color-secondary-foreground: var(--color-text-dim);
+  --color-muted: var(--color-ink-panel);
+  --color-muted-foreground: var(--color-text-muted);
+  --color-accent: var(--color-ink-panel);
+  --color-accent-foreground: var(--color-text);
+  --color-destructive: var(--color-error);
+  --color-destructive-foreground: var(--color-ink);
 
-  --color-muted: var(--muted);
-  --color-muted-foreground: var(--muted-foreground);
-
-  --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
-
-  --color-popover: var(--popover);
-  --color-popover-foreground: var(--popover-foreground);
-
-  --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
+  --font-display: 'Martian Mono', 'JetBrains Mono', ui-monospace, monospace;
+  --font-body: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+  --font-sans: 'JetBrains Mono', ui-monospace, monospace;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 }
 
 @layer base {
   :root {
-    --background: hsl(0 0% 100%);
-    --foreground: hsl(222.2 84% 4.9%);
-    --card: hsl(0 0% 100%);
-    --card-foreground: hsl(222.2 84% 4.9%);
-    --popover: hsl(0 0% 100%);
-    --popover-foreground: hsl(222.2 84% 4.9%);
-    --primary: hsl(221.2 83.2% 53.3%);
-    --primary-foreground: hsl(210 40% 98%);
-    --secondary: hsl(210 40% 96.1%);
-    --secondary-foreground: hsl(222.2 47.4% 11.2%);
-    --muted: hsl(210 40% 96.1%);
-    --muted-foreground: hsl(215.4 16.3% 46.9%);
-    --accent: hsl(210 40% 96.1%);
-    --accent-foreground: hsl(222.2 47.4% 11.2%);
-    --destructive: hsl(0 84.2% 60.2%);
-    --destructive-foreground: hsl(210 40% 98%);
-    --border: hsl(214.3 31.8% 91.4%);
-    --input: hsl(214.3 31.8% 91.4%);
-    --ring: hsl(221.2 83.2% 53.3%);
-    --radius: 0.5rem;
+    --background: #0a0b0d;
+    --foreground: #e8e6e0;
+    --card: #101114;
+    --card-foreground: #e8e6e0;
+    --popover: #101114;
+    --popover-foreground: #e8e6e0;
+    --primary: #d4ff00;
+    --primary-foreground: #0a0b0d;
+    --secondary: #101114;
+    --secondary-foreground: #d4d2cc;
+    --muted: #101114;
+    --muted-foreground: #8a8d92;
+    --accent: #101114;
+    --accent-foreground: #e8e6e0;
+    --destructive: #ff6b5a;
+    --destructive-foreground: #0a0b0d;
+    --border: #1e2024;
+    --input: #1e2024;
+    --ring: #d4ff00;
+    --radius: 0;
   }
 
-  .dark {
-    --background: hsl(222.2 84% 4.9%);
-    --foreground: hsl(210 40% 98%);
-    --card: hsl(222.2 84% 4.9%);
-    --card-foreground: hsl(210 40% 98%);
-    --popover: hsl(222.2 84% 4.9%);
-    --popover-foreground: hsl(210 40% 98%);
-    --primary: hsl(217.2 91.2% 59.8%);
-    --primary-foreground: hsl(222.2 47.4% 11.2%);
-    --secondary: hsl(217.2 32.6% 17.5%);
-    --secondary-foreground: hsl(210 40% 98%);
-    --muted: hsl(217.2 32.6% 17.5%);
-    --muted-foreground: hsl(215 20.2% 65.1%);
-    --accent: hsl(217.2 32.6% 17.5%);
-    --accent-foreground: hsl(210 40% 98%);
-    --destructive: hsl(0 62.8% 30.6%);
-    --destructive-foreground: hsl(210 40% 98%);
-    --border: hsl(217.2 32.6% 17.5%);
-    --input: hsl(217.2 32.6% 17.5%);
-    --ring: hsl(224.3 76.3% 48%);
+  * { @apply border-border; }
+
+  html, body, #root {
+    height: 100%;
   }
+
+  body {
+    background: var(--color-ink);
+    color: var(--color-text);
+    font-family: var(--font-body);
+    font-feature-settings: "ss01", "cv01", "cv02";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    overflow: hidden;
+  }
+
+  /* Ambient grain: a single radial + repeating noise on the root so every
+     surface has atmospheric depth instead of flat fills. */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(1200px 600px at 20% -10%, rgba(212, 255, 0, 0.035), transparent 60%),
+      radial-gradient(900px 500px at 110% 110%, rgba(99, 212, 255, 0.025), transparent 60%);
+    z-index: 0;
+  }
+  #root { position: relative; z-index: 1; }
 }
 
-@layer base {
-  * {
-    @apply border-border;
+@layer utilities {
+  .font-display { font-family: var(--font-display); }
+  .font-body { font-family: var(--font-body); }
+
+  /* Scanlines: subtle horizontal stripes that read as "live telemetry". */
+  .scanlines {
+    background-image: repeating-linear-gradient(
+      to bottom,
+      rgba(255, 255, 255, 0.02) 0px,
+      rgba(255, 255, 255, 0.02) 1px,
+      transparent 1px,
+      transparent 3px
+    );
   }
-  body {
-    @apply bg-background text-foreground;
+
+  .hair { border-color: var(--color-hair); }
+
+  /* Live pulse on active elements. */
+  .live-dot {
+    box-shadow: 0 0 8px rgba(212, 255, 0, 0.9), 0 0 16px rgba(212, 255, 0, 0.4);
+    animation: livePulse 1.6s ease-in-out infinite;
   }
+  @keyframes livePulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 8px rgba(212, 255, 0, 0.9), 0 0 16px rgba(212, 255, 0, 0.4); }
+    50% { opacity: 0.6; box-shadow: 0 0 4px rgba(212, 255, 0, 0.5), 0 0 8px rgba(212, 255, 0, 0.2); }
+  }
+
+  .live-cursor {
+    animation: liveBlink 1.1s steps(2, start) infinite;
+  }
+  @keyframes liveBlink {
+    to { opacity: 0; }
+  }
+
+  /* Rack chrome: a pane bezel with corner tick marks. */
+  .rack {
+    position: relative;
+    background: var(--color-ink-panel);
+    border: 1px solid var(--color-hair);
+  }
+  .rack::before,
+  .rack::after {
+    content: '';
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    border: 1px solid var(--color-hair-bright);
+  }
+  .rack::before { top: -1px; left: -1px; border-right: none; border-bottom: none; }
+  .rack::after { bottom: -1px; right: -1px; border-left: none; border-top: none; }
+
+  .rack-live {
+    box-shadow:
+      0 0 0 1px rgba(212, 255, 0, 0.15),
+      0 0 24px -8px rgba(212, 255, 0, 0.35),
+      0 1px 0 rgba(212, 255, 0, 0.08) inset;
+    border-color: rgba(212, 255, 0, 0.35);
+  }
+
+  /* Custom scrollbar — thin, integrated with the ink palette. */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #1e2024; }
+  ::-webkit-scrollbar-thumb:hover { background: #2a2d32; }
 }

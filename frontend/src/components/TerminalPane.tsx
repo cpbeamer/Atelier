@@ -1,77 +1,54 @@
 // frontend/src/components/TerminalPane.tsx
-import { useEffect, useRef, useState } from 'react';
+//
+// Composite pane: shows the structured AgentTranscript by default, with a
+// toggle to drop into a raw xterm.js view for the underlying PTY stream.
 
-interface TerminalLine {
-  id: number;
-  content: string;
-  type: 'input' | 'output' | 'system';
-}
+import { useState } from 'react';
+import { AgentTranscript } from './AgentTranscript';
+import { RawTerminalView } from './RawTerminalView';
+
+type ViewMode = 'structured' | 'raw';
 
 interface Props {
+  agentId: string;
   isActive: boolean;
-  theme?: 'dark' | 'light';
+  /** If this agent also has a backing PTY stream, supply its id to enable the raw view. */
+  ptyId?: string;
+  defaultView?: ViewMode;
 }
 
-// Fake terminal for demo - shows formatted output instead of real PTY
-export function TerminalPane({ isActive, theme = 'light' }: Props) {
-  const [lines, setLines] = useState<TerminalLine[]>([
-    { id: 0, content: 'Initializing agent session...', type: 'system' },
-    { id: 1, content: '[Agent ready]', type: 'system' },
-  ]);
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (isActive && lines.length <= 2) {
-      const timer = setTimeout(() => {
-        setLines(prev => [...prev,
-          { id: Date.now(), content: '> Analyzing project structure...', type: 'output' },
-        ]);
-      }, 500);
-      return () => clearTimeout(timer);
-    }
-  }, [isActive]);
-
-  useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [lines]);
-
-  const isDark = theme === 'dark';
+export function TerminalPane({ agentId, isActive, ptyId, defaultView = 'structured' }: Props) {
+  const [view, setView] = useState<ViewMode>(defaultView);
+  const canToggle = !!ptyId;
 
   return (
-    <div
-      className={`w-full h-full font-mono text-sm overflow-hidden rounded-b-xl ${
-        isDark ? 'bg-black' : 'bg-slate-100'
-      }`}
-    >
-      <div
-        ref={scrollRef}
-        className={`h-full overflow-y-auto p-4 ${isDark ? 'text-green-400' : 'text-slate-800'}`}
-      >
-        {lines.map((line) => (
-          <div
-            key={line.id}
-            className={`whitespace-pre-wrap break-all leading-relaxed ${
-              line.type === 'system'
-                ? isDark ? 'text-zinc-500 italic' : 'text-slate-400 italic'
-                : line.type === 'input'
-                ? isDark ? 'text-emerald-400' : 'text-emerald-700'
-                : ''
+    <div className="relative h-full w-full">
+      {view === 'structured' ? (
+        <AgentTranscript agentId={agentId} isActive={isActive} />
+      ) : (
+        ptyId && <RawTerminalView ptyId={ptyId} />
+      )}
+
+      {canToggle && (
+        <div className="absolute top-2 right-2 z-10 flex border border-[#1e2024] bg-[#0d0f12]/80 backdrop-blur-sm">
+          <button
+            onClick={() => setView('structured')}
+            className={`px-2 py-1 text-[10px] font-display uppercase tracking-[0.25em] transition-colors ${
+              view === 'structured' ? 'bg-[#1e2024] text-[#d4ff00]' : 'text-[#6b6b68] hover:text-[#d4d2cc]'
             }`}
           >
-            {line.content}
-          </div>
-        ))}
-        {/* Blinking cursor */}
-        <span className={`inline-block w-2 h-4 ${isDark ? 'bg-green-400' : 'bg-slate-700'} animate-pulse`} />
-      </div>
-
-      <style>{`
-        .font-mono {
-          font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
-        }
-      `}</style>
+            feed
+          </button>
+          <button
+            onClick={() => setView('raw')}
+            className={`px-2 py-1 text-[10px] font-display uppercase tracking-[0.25em] transition-colors ${
+              view === 'raw' ? 'bg-[#1e2024] text-[#d4ff00]' : 'text-[#6b6b68] hover:text-[#d4d2cc]'
+            }`}
+          >
+            raw
+          </button>
+        </div>
+      )}
     </div>
   );
 }

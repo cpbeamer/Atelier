@@ -3,6 +3,7 @@ import { WebSocketServer } from 'ws';
 import http from 'node:http';
 import fs from 'node:fs';
 import { ptyManager } from './pty-manager.js';
+import { agentStreamManager, type AgentEvent } from './agent-stream.js';
 import { startSidecar, stopSidecar } from './sidecar-lifecycle.js';
 import { milestones } from './db.js';
 import { loadProjectContext, saveProjectContext } from './project-context.js';
@@ -22,6 +23,10 @@ const ptySubscriptions = new Map<string, Set<WebSocket>>();
 
 // Track which PTY IDs have registered handlers (to avoid duplicate registration)
 const ptyHandlersRegistered = new Set<string>();
+
+// Structured-agent subscriptions: maps agent ID to set of subscribed WebSocket clients
+const agentSubscriptions = new Map<string, Set<WebSocket>>();
+const agentHandlersRegistered = new Set<string>();
 
 // Broadcast to all connected WebSocket clients
 function broadcastToUI(type: string, payload: any) {
@@ -78,6 +83,44 @@ wss.on('connection', (ws) => {
       }
 
       console.log(`Client subscribed to PTY: ${id}`);
+    } else if (msg.type === 'agent-subscribe') {
+      const { id } = msg.payload;
+      if (!agentSubscriptions.has(id)) agentSubscriptions.set(id, new Set());
+      agentSubscriptions.get(id)!.add(ws);
+
+      // Replay any buffered scrollback first so late subscribers don't miss events.
+      for (const event of agentStreamManager.getScrollback(id)) {
+        ws.send(JSON.stringify({ type: 'agent-event', payload: { id, event } }));
+      }
+
+      if (!agentHandlersRegistered.has(id)) {
+        agentStreamManager.onEvent(id, (event: AgentEvent) => {
+          const subs = agentSubscriptions.get(id);
+          if (!subs) return;
+          const wire = JSON.stringify({ type: 'agent-event', payload: { id, event } });
+          subs.forEach((c) => c.readyState === c.OPEN && c.send(wire));
+          if (event.kind === 'exit') {
+            agentHandlersRegistered.delete(id);
+          }
+        });
+        agentHandlersRegistered.add(id);
+      }
+    } else if (msg.type === 'agent-start') {
+      const { id, persona, task, cwd, model } = msg.payload;
+      agentStreamManager
+        .start({ id, persona, task, cwd, model })
+        .catch((err) => {
+          const subs = agentSubscriptions.get(id);
+          if (subs) {
+            const wire = JSON.stringify({
+              type: 'agent-event',
+              payload: { id, event: { kind: 'stderr', text: `start failed: ${err?.message ?? err}`, ts: Date.now() } },
+            });
+            subs.forEach((c) => c.readyState === c.OPEN && c.send(wire));
+          }
+        });
+    } else if (msg.type === 'agent-kill') {
+      agentStreamManager.kill(msg.payload.id);
     } else if (msg.type === 'pty-spawn') {
       const { id, command, args, cwd } = msg.payload;
       console.log(`Spawning PTY ${id}: ${command} ${args.join(' ')}`);
@@ -115,6 +158,10 @@ wss.on('connection', (ws) => {
       if (subscribers.size === 0) {
         ptySubscriptions.delete(id);
       }
+    }
+    for (const [id, subscribers] of agentSubscriptions) {
+      subscribers.delete(ws);
+      if (subscribers.size === 0) agentSubscriptions.delete(id);
     }
   });
 });
