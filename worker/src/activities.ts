@@ -978,50 +978,6 @@ Rules:
   return { code: winner.output, filesChanged: applied };
 }
 
-interface CritiqueResult {
-  selfApproved: boolean;
-  issues: Array<{ file: string; line?: number; kind: string; fix: string }>;
-}
-
-async function runSelfCritique(opts: {
-  ticket: ScopedTicket;
-  result: string;
-  projectPath: string;
-  runId?: string;
-}): Promise<CritiqueResult | null> {
-  const { ticket, result, projectPath, runId } = opts;
-  const criticAgentId = 'developer-critic';
-  await notifyAgentStart({ agentId: criticAgentId, agentName: 'Developer (self-critique)', terminalType: 'direct-llm' });
-  try {
-    const criticPersona = await loadPersona(projectPath, 'developer-critic');
-    const critique = await withJsonRetry<CritiqueResult>(
-      (suffix) => callLLM(
-        criticPersona,
-        `Ticket: ${ticket.title}\n${ticket.description}\n\nAcceptance:\n${ticket.acceptanceCriteria.map((c) => `- ${c}`).join('\n')}\n\nCode you just produced:\n${result.slice(0, 20000)}${suffix ?? ''}`,
-        { agentId: criticAgentId, runId },
-      ),
-      {
-        maxAttempts: 2,
-        validate: (v) =>
-          typeof v === 'object' && v !== null
-          && typeof (v as any).selfApproved === 'boolean'
-          && Array.isArray((v as any).issues),
-      },
-    );
-    await notifyAgentComplete({
-      agentId: criticAgentId,
-      status: 'completed',
-      output: critique.selfApproved
-        ? 'self-approved — no issues found'
-        : `${critique.issues.length} issue(s) to address`,
-    });
-    return critique;
-  } catch (e) {
-    await notifyAgentComplete({ agentId: criticAgentId, status: 'error', output: String(e).slice(0, 500) });
-    return null;
-  }
-}
-
 export async function reviewCode(input: ReviewInput & { worktreePath?: string }): Promise<ReviewResult> {
   const { implementation, ticket, worktreePath, agentId, runId } = input;
 
