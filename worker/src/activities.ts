@@ -830,6 +830,139 @@ Rules:
   return { code: finalCode, filesChanged: applied };
 }
 
+/**
+ * Best-of-N developer for high-complexity tickets. Spawns N candidate
+ * implementations at spread temperatures, applies the chosen one to the
+ * worktree. Unlike implementCode, this does NOT apply all candidates —
+ * only the single winner — so there's no race on the git index.
+ *
+ * Gating: the workflow routes here only when architect flagged
+ * ticket.complexity === 'high'. Low/medium tickets keep the single-pass
+ * implementCode path which is faster and usually sufficient.
+ */
+export async function implementCodeBestOfN(
+  input: ImplementInput & { n?: number },
+): Promise<ImplementOutput> {
+  const { ticket, worktreePath, projectPath, feedback, testFeedback, runId } = input;
+  const n = Math.max(2, input.n ?? 3);
+
+  const persona = await loadPersona(projectPath, 'developer');
+  const suggested = ticket.filesToChange.filter((p) => p && p.trim().length > 0);
+  const existingContext = suggested.length > 0
+    ? await readFilesForContext(worktreePath, suggested)
+    : '(no suggested files — decide based on the ticket)';
+
+  let prompt = `
+Ticket: ${ticket.title}
+${ticket.description}
+
+Technical plan:
+${ticket.technicalPlan}
+
+Acceptance criteria:
+${ticket.acceptanceCriteria.map((c) => `- ${c}`).join('\n')}
+
+Suggested files to change: ${suggested.length > 0 ? suggested.join(', ') : '(decide based on context)'}
+
+Current file contents (worktree rooted at ${worktreePath}):
+${existingContext}
+`;
+  if (feedback && feedback.length > 0) {
+    prompt += `\n\nCODE REVIEW FEEDBACK to address:\n${feedback.join('\n')}\n`;
+  }
+  if (testFeedback && testFeedback.length > 0) {
+    prompt += `\n\nTEST FAILURES to fix:\n${testFeedback.join('\n')}\n`;
+  }
+  prompt += `
+
+OUTPUT PROTOCOL — READ CAREFULLY
+You cannot edit files directly. Emit file writes and deletes using these exact markers and nothing else will be applied:
+
+=== BEGIN FILE: path/relative/to/worktree.ext ===
+<full file contents — this REPLACES the file>
+=== END FILE ===
+
+=== DELETE FILE: path/relative/to/worktree.ext ===
+
+Rules:
+- Paths are relative to the worktree root. No absolute paths, no "..".
+- Always emit the FULL intended contents of every file you change (not a diff, not a snippet).
+- You may emit multiple BEGIN FILE / END FILE blocks. Emit DELETE FILE markers only when a file must be removed.
+- Outside the markers you may write brief reasoning, but it will be ignored.
+- End with a one-line summary prefixed "SUMMARY: ".`;
+
+  // Generate N candidates in parallel with spread temperatures. Each writes
+  // to its own agent pane for transparency; none of them touch the worktree.
+  const tempsDefault = [0.3, 0.6, 0.9];
+  const temps = Array.from({ length: n }, (_, i) => tempsDefault[i] ?? 0.3 + 0.2 * i);
+
+  const candidates = await Promise.all(temps.map(async (temperature, idx) => {
+    const subAgentId = `developer-${idx + 1}`;
+    await notifyAgentStart({
+      agentId: subAgentId,
+      agentName: `Developer #${idx + 1} (temp=${temperature})`,
+      terminalType: 'direct-llm',
+    });
+    try {
+      const out = await callLLM(persona, prompt, {
+        cwd: worktreePath, agentId: subAgentId, runId, temperature,
+      });
+      const edits = parseFileEdits(out);
+      await notifyAgentComplete({
+        agentId: subAgentId,
+        status: 'completed',
+        output: `${edits.length} edit(s) produced`,
+      });
+      return { output: out, edits };
+    } catch (e) {
+      await notifyAgentComplete({ agentId: subAgentId, status: 'error', output: String(e).slice(0, 500) });
+      return null;
+    }
+  }));
+
+  const valid = candidates
+    .map((c, i) => c && c.edits.length > 0 ? { index: i, output: c.output } : null)
+    .filter((c): c is { index: number; output: string } => c !== null);
+
+  if (valid.length === 0) {
+    throw new NonRetryableAgentError(
+      `best-of-N: all ${n} developer candidates produced zero edits for ticket ${ticket.id}`,
+    );
+  }
+
+  // If only one candidate validated, skip the judge and apply it.
+  let winnerIdx: number;
+  if (valid.length === 1) {
+    winnerIdx = valid[0].index;
+  } else {
+    const judgePersona = await loadPersona(projectPath, 'developer-judge');
+    const judgePrompt = `Ticket: ${ticket.title}\n${ticket.description}\n\nAcceptance:\n${ticket.acceptanceCriteria.map((c) => `- ${c}`).join('\n')}\n\nCandidates:\n${valid.map((c) => `=== CANDIDATE ${c.index} ===\n${c.output.slice(0, 10000)}`).join('\n\n')}`;
+    try {
+      const choice = await withJsonRetry<{ chosenIndex: number; reason: string }>(
+        (suffix) => callLLM(judgePersona, `${judgePrompt}${suffix ?? ''}`, {
+          agentId: 'developer-judge', runId,
+        }),
+        {
+          maxAttempts: 2,
+          validate: (v) =>
+            typeof v === 'object' && v !== null
+            && typeof (v as any).chosenIndex === 'number',
+        },
+      );
+      winnerIdx = choice.chosenIndex >= 0 && valid.some((c) => c.index === choice.chosenIndex)
+        ? choice.chosenIndex
+        : valid[0].index;
+    } catch {
+      // Judge failed or returned -1 — use the first valid candidate.
+      winnerIdx = valid[0].index;
+    }
+  }
+
+  const winner = candidates[winnerIdx]!;
+  const applied = await applyFileEdits(worktreePath, winner.edits);
+  return { code: winner.output, filesChanged: applied };
+}
+
 interface CritiqueResult {
   selfApproved: boolean;
   issues: Array<{ file: string; line?: number; kind: string; fix: string }>;

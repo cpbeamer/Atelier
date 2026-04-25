@@ -9,6 +9,7 @@ const {
   generateTickets,
   scopeArchitecture,
   implementCode,
+  implementCodeBestOfN,
   reviewCodePanel,
   testCode,
   verifyCode,
@@ -93,10 +94,14 @@ export async function autopilotWorkflow(input: AutopilotInput): Promise<Autopilo
   const { scopedTickets } = await scopeArchitecture({ tickets, projectPath, worktreePath, agentId: 'architect', runId });
   await notifyAgentComplete({ agentId: 'architect', status: 'completed', output: summarize(scopedTickets) });
 
-  // Phase 5-8: Implement → Review → Test → Push (per ticket, with loops)
+  // Phase 5-8: Implement → Review → Test → Push (per ticket, with loops).
+  // High-complexity tickets go through best-of-N with a judge; low/medium use
+  // the single-pass implementCode (faster, usually sufficient).
   for (const ticket of scopedTickets) {
     await notifyAgentStart({ agentId: 'developer', agentName: 'Developer', terminalType: 'terminal' });
-    const implOutput = await implementCode({ ticket, worktreePath, projectPath, agentId: 'developer', runId });
+    const implOutput = ticket.complexity === 'high'
+      ? await implementCodeBestOfN({ ticket, worktreePath, projectPath, agentId: 'developer', runId, n: 3 })
+      : await implementCode({ ticket, worktreePath, projectPath, agentId: 'developer', runId });
     const implementation = { ticketId: ticket.id, code: implOutput.code, filesChanged: implOutput.filesChanged };
     await notifyAgentComplete({
       agentId: 'developer',
