@@ -35,6 +35,7 @@ const AUTOPILOT_CONNECTIONS = [
 function App() {
   const [activeProject, setActiveProject] = useState<Project | null>(null);
   const [activeRun, setActiveRun] = useState<string | null>(null);
+  const [activeWorkflowType, setActiveWorkflowType] = useState<string | null>(null);
   const [panes, setPanes] = useState<TerminalPaneConfig[]>([]);
   const [showInbox, setShowInbox] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -53,6 +54,7 @@ function App() {
         suggestedFeatures: [],
       });
       setActiveRun(runId);
+      setActiveWorkflowType('autopilot');
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setAutopilotError(
@@ -86,6 +88,7 @@ function App() {
         input: { language: workflow.language },
       });
       setActiveRun(runId);
+      setActiveWorkflowType(workflow.name);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setAutopilotError(`Couldn't start workflow: ${msg}`);
@@ -169,7 +172,7 @@ function App() {
 
           {workflowActive && (
             <div className="w-72 shrink-0 border-l border-[var(--color-hair)]">
-              <WorkflowGraph runId={activeRun || undefined} />
+              <WorkflowGraph runId={activeRun || undefined} workflowType={activeWorkflowType || undefined} />
             </div>
           )}
         </div>
