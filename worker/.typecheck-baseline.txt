@@ -1,0 +1,27 @@
+src/workflows/feature-pipeline.ts(30,20): error TS2558: Expected 1 type arguments, but got 2.
+src/workflows/feature-pipeline.ts(37,20): error TS2558: Expected 1 type arguments, but got 2.
+src/workflows/feature-pipeline.ts(50,42): error TS2558: Expected 1 type arguments, but got 2.
+src/workflows/feature-pipeline.ts(72,39): error TS2558: Expected 1 type arguments, but got 2.
+src/workflows/feature-pipeline.ts(91,37): error TS2558: Expected 1 type arguments, but got 2.
+src/workflows/feature-pipeline.ts(107,35): error TS2322: Type 'unknown' is not assignable to type 'string | undefined'.
+src/workflows/feature.workflow.ts(8,3): error TS2322: Type '(ctx: any, input: any) => Promise<{ status: string; verdict: { verdict: "Approved" | "Rejected"; reason?: string | undefined; decidedBy: string; }; design?: undefined; code?: undefined; } | { status: string; design: string; code: string; verdict?: undefined; }>' is not assignable to type '(input: unknown) => Promise<unknown>'.
+  Target signature provides too few arguments. Expected 2 or more, but got 1.
+src/workflows/feature.workflow.ts(8,15): error TS7006: Parameter 'ctx' implicitly has an 'any' type.
+src/workflows/feature.workflow.ts(8,20): error TS7006: Parameter 'input' implicitly has an 'any' type.
+src/workflows/feature.workflow.ts(9,60): error TS2345: Argument of type '{ signal: any; }' is not assignable to parameter of type 'string'.
+src/workflows/feature.workflow.ts(10,58): error TS2345: Argument of type '{ proposal: string; }' is not assignable to parameter of type 'string'.
+src/workflows/feature.workflow.ts(12,65): error TS2554: Expected 2 arguments, but got 3.
+src/workflows/feature.workflow.ts(17,54): error TS2345: Argument of type '{ proposal: string; }' is not assignable to parameter of type 'string'.
+src/workflows/feature.workflow.ts(18,54): error TS2345: Argument of type '{ design: string; }' is not assignable to parameter of type 'string'.
+src/workflows/greenfield.workflow.ts(44,24): error TS2488: Type 'ScopeOutput' must have a '[Symbol.iterator]()' method that returns an iterator.
+src/workflows/greenfield.workflow.ts(53,41): error TS2741: Property 'ticketId' is missing in type 'ImplementOutput' but required in type 'Implementation'.
+src/workflows/greenfield.workflow.ts(68,39): error TS2741: Property 'ticketId' is missing in type 'ImplementOutput' but required in type 'Implementation'.
+src/workflows/greenfield.workflow.ts(82,69): error TS2740: Type 'ScopeOutput' is missing the following properties from type 'ScopedTicket[]': length, pop, push, concat, and 29 more.
+src/workflows/greenfield.workflow.ts(85,63): error TS2339: Property 'length' does not exist on type 'ScopeOutput'.
+src/workflows/mvp.workflow.ts(12,24): error TS2554: Expected 3-4 arguments, but got 1.
+src/workflows/pm-validation.workflow.ts(8,3): error TS2322: Type '(ctx: any, input: any) => Promise<{ status: string; verdict: { verdict: "Approved" | "Rejected"; reason?: string | undefined; decidedBy: string; }; review?: undefined; } | { status: string; review: string; verdict?: undefined; }>' is not assignable to type '(input: unknown) => Promise<unknown>'.
+  Target signature provides too few arguments. Expected 2 or more, but got 1.
+src/workflows/pm-validation.workflow.ts(8,15): error TS7006: Parameter 'ctx' implicitly has an 'any' type.
+src/workflows/pm-validation.workflow.ts(8,20): error TS7006: Parameter 'input' implicitly has an 'any' type.
+src/workflows/pm-validation.workflow.ts(9,57): error TS2345: Argument of type '{ proposal: any; }' is not assignable to parameter of type 'string'.
+src/workflows/pm-validation.workflow.ts(11,67): error TS2554: Expected 2 arguments, but got 3.

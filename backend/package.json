@@ -10,7 +10,7 @@
   "dependencies": {
     "@temporalio/client": "^1.16.0",
     "keytar": "^7.9.0",
-    "node-pty": "^1.1.0",
+    "node-pty": "1.2.0-beta.12",
     "ws": "^8.18.0"
   },
   "devDependencies": {

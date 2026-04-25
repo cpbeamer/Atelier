@@ -1,11 +1,11 @@
-import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { WebSocketServer } from 'ws';
 import http from 'node:http';
 import fs from 'node:fs';
 import { ptyManager } from './pty-manager.js';
-import { startSidecar } from './sidecar-lifecycle.js';
-import { milestones } from './db.js';
+import { agentStreamManager, type AgentEvent } from './agent-stream.js';
+import { startSidecar, stopSidecar } from './sidecar-lifecycle.js';
+import { milestones, modelConfig, agentCalls, type AgentCallRecord } from './db.js';
 import { loadProjectContext, saveProjectContext } from './project-context.js';
 import './ipc-handlers.js';
 
@@ -14,28 +14,6 @@ declare global {
 }
 
 const PORT = 3000;
-const TEMPORAL_PATH = path.join(process.env.HOME || '', '.atelier', 'temporal', 'temporal');
-
-// Start Temporal Sidecar
-function startTemporal() {
-  console.log('Starting Temporal sidecar...');
-  const temporal = spawn(TEMPORAL_PATH, [
-    'server', 'start-dev',
-    '--port', '7466',
-    '--http-port', '7467',
-    '--ui-port', '8466'
-  ], {
-    stdio: 'inherit'
-  });
-
-  temporal.on('error', (err) => {
-    console.error('Failed to start Temporal:', err);
-  });
-
-  return temporal;
-}
-
-const temporalProcess = startTemporal();
 
 // WebSocket Server for UI
 const wss = new WebSocketServer({ port: PORT });
@@ -45,6 +23,10 @@ const ptySubscriptions = new Map<string, Set<WebSocket>>();
 
 // Track which PTY IDs have registered handlers (to avoid duplicate registration)
 const ptyHandlersRegistered = new Set<string>();
+
+// Structured-agent subscriptions: maps agent ID to set of subscribed WebSocket clients
+const agentSubscriptions = new Map<string, Set<WebSocket>>();
+const agentHandlersRegistered = new Set<string>();
 
 // Broadcast to all connected WebSocket clients
 function broadcastToUI(type: string, payload: any) {
@@ -101,6 +83,44 @@ wss.on('connection', (ws) => {
       }
 
       console.log(`Client subscribed to PTY: ${id}`);
+    } else if (msg.type === 'agent-subscribe') {
+      const { id } = msg.payload;
+      if (!agentSubscriptions.has(id)) agentSubscriptions.set(id, new Set());
+      agentSubscriptions.get(id)!.add(ws);
+
+      // Replay any buffered scrollback first so late subscribers don't miss events.
+      for (const event of agentStreamManager.getScrollback(id)) {
+        ws.send(JSON.stringify({ type: 'agent-event', payload: { id, event } }));
+      }
+
+      if (!agentHandlersRegistered.has(id)) {
+        agentStreamManager.onEvent(id, (event: AgentEvent) => {
+          const subs = agentSubscriptions.get(id);
+          if (!subs) return;
+          const wire = JSON.stringify({ type: 'agent-event', payload: { id, event } });
+          subs.forEach((c) => c.readyState === c.OPEN && c.send(wire));
+          if (event.kind === 'exit') {
+            agentHandlersRegistered.delete(id);
+          }
+        });
+        agentHandlersRegistered.add(id);
+      }
+    } else if (msg.type === 'agent-start') {
+      const { id, persona, task, cwd, model } = msg.payload;
+      agentStreamManager
+        .start({ id, persona, task, cwd, model })
+        .catch((err) => {
+          const subs = agentSubscriptions.get(id);
+          if (subs) {
+            const wire = JSON.stringify({
+              type: 'agent-event',
+              payload: { id, event: { kind: 'stderr', text: `start failed: ${err?.message ?? err}`, ts: Date.now() } },
+            });
+            subs.forEach((c) => c.readyState === c.OPEN && c.send(wire));
+          }
+        });
+    } else if (msg.type === 'agent-kill') {
+      agentStreamManager.kill(msg.payload.id);
     } else if (msg.type === 'pty-spawn') {
       const { id, command, args, cwd } = msg.payload;
       console.log(`Spawning PTY ${id}: ${command} ${args.join(' ')}`);
@@ -118,8 +138,14 @@ wss.on('connection', (ws) => {
         handlers[msg.type](msg.payload).then((result: any) => {
           ws.send(JSON.stringify({ type: msg.type + ':response', id: msg.id, payload: result }));
         }).catch((err: any) => {
-          ws.send(JSON.stringify({ type: msg.type + ':response', id: msg.id, error: err.message }));
+          ws.send(JSON.stringify({ type: msg.type + ':response', id: msg.id, error: err?.message || String(err) }));
         });
+      } else {
+        ws.send(JSON.stringify({
+          type: msg.type + ':response',
+          id: msg.id,
+          error: `No IPC handler registered for '${msg.type}'`,
+        }));
       }
     }
   });
@@ -132,6 +158,10 @@ wss.on('connection', (ws) => {
       if (subscribers.size === 0) {
         ptySubscriptions.delete(id);
       }
+    }
+    for (const [id, subscribers] of agentSubscriptions) {
+      subscribers.delete(ws);
+      if (subscribers.size === 0) agentSubscriptions.delete(id);
     }
   });
 });
@@ -228,6 +258,35 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // GET /api/settings/primaryProvider - resolve the primary provider for the worker
+  if (req.method === 'GET' && url.pathname === '/api/settings/primaryProvider') {
+    try {
+      const row = modelConfig.findPrimary();
+      if (!row) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'No primary provider set' }));
+        return;
+      }
+      let models: string[] = [];
+      try { models = JSON.parse(row.models_json || '[]'); } catch { models = []; }
+      const selectedModel = row.selected_model && models.includes(row.selected_model)
+        ? row.selected_model
+        : (models[0] ?? null);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        id: row.id,
+        name: row.name,
+        baseUrl: row.base_url,
+        kind: row.kind,
+        selectedModel,
+      }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: String(err) }));
+    }
+    return;
+  }
+
   // GET /api/settings/apiKey/:providerId - get API key from keychain
   if (req.method === 'GET' && url.pathname.startsWith('/api/settings/apiKey/')) {
     const providerId = url.pathname.split('/').pop();
@@ -237,19 +296,32 @@ const httpServer = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ apiKey: apiKey || null }));
     } catch (err) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: String(err) }));
+      // keytar may fail if no keyring is available (e.g., headless environment)
+      console.warn('Failed to get API key from keyring:', err);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ apiKey: null }));
     }
     return;
   }
 
-  // POST /api/pty/spawn
+  // POST /api/pty/spawn — two payload shapes:
+  //   { id, command, args, cwd?, env? }     raw spawn (opencode + future tools)
+  //   { id, persona, task, cwd? }           legacy claude-CLI-via-shell
   if (req.method === 'POST' && url.pathname === '/api/pty/spawn') {
     let body = '';
     req.on('data', chunk => { body += chunk; });
     req.on('end', async () => {
       try {
-        const { id, persona, task, cwd } = JSON.parse(body);
+        const parsed = JSON.parse(body);
+        if (typeof parsed.command === 'string') {
+          const { id, command, args = [], cwd, env = {} } = parsed;
+          ptyManager.spawn(id, command, args, cwd, env);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ spawned: true, ptyId: id }));
+          return;
+        }
+
+        const { id, persona, task, cwd } = parsed;
         const personaPath = path.join(process.cwd(), 'src', '.atelier', 'agents', `${persona}.md`);
         const personaContent = fs.readFileSync(personaPath, 'utf-8');
         const fullPrompt = `${personaContent}\n\n---\n\n${task}`;
@@ -277,8 +349,23 @@ const httpServer = http.createServer(async (req, res) => {
     if (ptyRunning) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'running' }));
+      return;
+    }
+    // PTY not running — may have exited (clean or crashed) or never spawned.
+    const exitState = ptyManager.getExitState(agentId);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    if (exitState) {
+      res.end(JSON.stringify({
+        status: exitState.exitCode === 0 ? 'completed' : 'error',
+        exitCode: exitState.exitCode,
+        signal: exitState.signal,
+        outputTail: exitState.outputTail,
+        output: exitState.outputTail,
+        error: exitState.exitCode !== 0
+          ? `PTY exited with code ${exitState.exitCode}${exitState.signal ? ` (signal ${exitState.signal})` : ''}`
+          : undefined,
+      }));
     } else {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'completed', output: '' }));
     }
     return;
@@ -336,6 +423,29 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // POST /api/agent/event  — push a synthetic agent-event (from worker activities)
+  if (req.method === 'POST' && url.pathname === '/api/agent/event') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const { id, event } = JSON.parse(body);
+        if (!id || !event || typeof event.kind !== 'string') {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'id and event.kind required' }));
+          return;
+        }
+        agentStreamManager.pushSynthetic(id, { ...event, ts: event.ts ?? Date.now() });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+    });
+    return;
+  }
+
   // POST /api/agent/complete
   if (req.method === 'POST' && url.pathname === '/api/agent/complete') {
     let body = '';
@@ -354,6 +464,60 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // POST /api/agent/call — worker reports a completed LLM call for telemetry
+  if (req.method === 'POST' && url.pathname === '/api/agent/call') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const row = JSON.parse(body) as AgentCallRecord;
+        if (!row.runId || !row.agentId || !row.providerId || !row.model) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'runId, agentId, providerId, model required' }));
+          return;
+        }
+        agentCalls.record(row);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+    });
+    return;
+  }
+
+  // GET /api/runs/:runId/cost — aggregate totals + per-agent breakdown
+  if (req.method === 'GET' && url.pathname.startsWith('/api/runs/') && url.pathname.endsWith('/cost')) {
+    const parts = url.pathname.split('/');
+    const runId = parts[parts.length - 2];
+    try {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        total: agentCalls.totalsForRun(runId) ?? { total_tokens: 0, total_cost_usd: 0 },
+        byAgent: agentCalls.byAgentForRun(runId),
+      }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: String(err) }));
+    }
+    return;
+  }
+
+  // GET /api/runs/:runId/calls — raw call log (audit)
+  if (req.method === 'GET' && url.pathname.startsWith('/api/runs/') && url.pathname.endsWith('/calls')) {
+    const parts = url.pathname.split('/');
+    const runId = parts[parts.length - 2];
+    try {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(agentCalls.listByRun(runId)));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: String(err) }));
+    }
+    return;
+  }
+
   // Default: 404
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: 'Not found' }));
@@ -363,10 +527,14 @@ httpServer.listen(3001, () => {
   console.log(`Milestone HTTP API running on http://localhost:3001`);
 });
 
-// Start Temporal sidecar
-startSidecar().catch(console.error);
+// Start Temporal sidecar (skip if using external server)
+if (!process.env.USE_EXTERNAL_TEMPORAL) {
+  startSidecar().catch(console.error);
+} else {
+  console.log('Using external Temporal server at', process.env.TEMPORAL_ADDRESS);
+}
 
-process.on('SIGINT', () => {
-  temporalProcess.kill();
+process.on('SIGINT', async () => {
+  await stopSidecar().catch(() => {});
   process.exit();
 });
