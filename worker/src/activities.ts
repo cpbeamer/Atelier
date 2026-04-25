@@ -194,11 +194,12 @@ export interface AgentCompletion {
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { callLLM, getPrimaryModelName } from './llm/callLLM.js';
+import { callLLM, getPrimaryModelName, getPrimaryProvider, getApiKey } from './llm/callLLM.js';
 import { withJsonRetry } from './llm/withJsonRetry.js';
 import { NonRetryableAgentError } from './errors.js';
 import { runVerify } from './verify.js';
 import { loadPersona, loadPanel } from './personaLoader.js';
+import { runOpenCodeAgent } from './llm/opencodeAgent.js';
 
 async function readFile(filePath: string): Promise<string> {
   return fs.promises.readFile(filePath, 'utf-8');
@@ -759,6 +760,33 @@ export async function implementCode(input: ImplementInput): Promise<ImplementOut
 
   const persona = await loadPersona(projectPath, 'developer');
 
+  // opencode path: spawn a real tool-using agent inside the worktree. The
+  // agent has Read/Edit/Bash/Grep tools so it iterates against actual repo
+  // state instead of dictating BEGIN FILE blocks blind. Gated behind a flag
+  // until smoke-tested across more tickets.
+  if (process.env.ATELIER_USE_OPENCODE === '1') {
+    const provider = await getPrimaryProvider();
+    const apiKey = await getApiKey(provider.id, provider.kind);
+    const run = await runOpenCodeAgent({
+      worktreePath, ticket, feedback, testFeedback,
+      agentId: agentId ?? 'developer',
+      runId: runId ?? 'unknown',
+      apiKey,
+      primaryProvider: provider,
+      developerPersona: persona,
+    });
+    if (run.filesChanged.length === 0) {
+      // The model ran cleanly and explicitly chose to change nothing. Retrying
+      // with the same prompt won't help — surface as non-retryable so the
+      // workflow's stalled-milestone path can escalate to a human.
+      throw new NonRetryableAgentError(
+        `opencode produced no file changes for ticket ${ticket.id}. summary: ${run.summary}`,
+      );
+    }
+    return { code: run.summary, filesChanged: run.filesChanged };
+  }
+
+  // Legacy path: one-shot LLM dictation with BEGIN FILE / END FILE parsing.
   const suggested = ticket.filesToChange.filter((p) => p && p.trim().length > 0);
   const existingContext = suggested.length > 0
     ? await readFilesForContext(worktreePath, suggested)
@@ -813,36 +841,8 @@ Rules:
       `Developer produced no file edits for ticket ${ticket.id}. Output preview: ${result.slice(0, 500)}`,
     );
   }
-  let applied = await applyFileEdits(worktreePath, edits);
-  let finalCode = result;
-
-  // Self-critique pass: the developer re-reads its own diff before the
-  // reviewer panel sees it. If it finds concrete issues, we run one more
-  // implementation pass with those issues as feedback, then apply those
-  // edits on top. Skip the critique for feedback/testFeedback iterations
-  // (already addressing specific comments — another layer of critique is noise).
-  if (!feedback && !testFeedback) {
-    const critique = await runSelfCritique({
-      ticket, result, projectPath, runId,
-    });
-    if (critique && !critique.selfApproved && critique.issues.length > 0) {
-      const critiqueFeedback = critique.issues.map(
-        (i) => `${i.file}:${i.line ?? '?'} [${i.kind}]: ${i.fix}`,
-      );
-      const retryPrompt = `${prompt}\n\nSELF-CRITIQUE TO ADDRESS:\n${critiqueFeedback.join('\n')}`;
-      const retryResult = await callLLM(persona, retryPrompt, { cwd: worktreePath, agentId, runId });
-      const retryEdits = parseFileEdits(retryResult);
-      if (retryEdits.length > 0) {
-        applied = await applyFileEdits(worktreePath, retryEdits);
-        finalCode = retryResult;
-      }
-      // If the retry produced zero edits, keep the original — the first pass
-      // was at least valid code, and blocking on a bad retry is worse than
-      // letting the reviewer panel catch whatever the critic flagged.
-    }
-  }
-
-  return { code: finalCode, filesChanged: applied };
+  const applied = await applyFileEdits(worktreePath, edits);
+  return { code: result, filesChanged: applied };
 }
 
 /**
