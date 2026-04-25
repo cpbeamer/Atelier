@@ -8,6 +8,7 @@ export interface ResearchInput {
   projectPath: string;
   userContext?: Record<string, string>;
   agentId?: string;
+  runId?: string;
 }
 
 export interface ResearchOutput {
@@ -22,6 +23,7 @@ export interface DebateInput {
   repoAnalysis: ResearchOutput;
   suggestedFeatures: string[];
   agentIds?: { signal?: string; noise?: string; reconcile?: string };
+  runId?: string;
 }
 
 export interface DebateOutput {
@@ -40,6 +42,7 @@ export interface Ticket {
 export interface TicketsInput {
   approvedFeatures: DebateOutput['approvedFeatures'];
   agentId?: string;
+  runId?: string;
 }
 
 export interface TicketsOutput {
@@ -57,6 +60,7 @@ export interface ScopeInput {
   projectPath: string;
   worktreePath: string;
   agentId?: string;
+  runId?: string;
 }
 
 export interface ScopeOutput {
@@ -76,6 +80,7 @@ export interface ImplementInput {
   feedback?: string[];
   testFeedback?: string[];
   agentId?: string;
+  runId?: string;
 }
 
 export interface ImplementOutput {
@@ -92,6 +97,7 @@ export interface ReviewInput {
   implementation: Implementation;
   ticket: ScopedTicket;
   agentId?: string;
+  runId?: string;
 }
 
 export interface TestResult {
@@ -102,6 +108,7 @@ export interface TestResult {
 export interface TestInput {
   implementation: Implementation;
   ticket: ScopedTicket;
+  runId?: string;
 }
 
 export interface PushResult {
@@ -332,7 +339,7 @@ export async function spawnAgent(
 // Stub implementations - replace with real agent logic in later tasks
 
 export async function researchRepo(input: ResearchInput): Promise<ResearchOutput> {
-  const { projectPath, userContext = {}, agentId } = input;
+  const { projectPath, userContext = {}, agentId, runId } = input;
 
   // Read key files
   const readme = await readFile(path.join(projectPath, 'README.md')).catch(() => '');
@@ -378,7 +385,7 @@ Format your response as JSON with fields: repoStructure, currentFeatures, gaps, 
 `;
 
   const persona = await loadPersona(projectPath, 'researcher');
-  const result = await callLLM(persona, researchPrompt, { cwd: projectPath, agentId });
+  const result = await callLLM(persona, researchPrompt, { cwd: projectPath, agentId, runId });
 
   // Parse the result
   try {
@@ -402,7 +409,7 @@ Format your response as JSON with fields: repoStructure, currentFeatures, gaps, 
 }
 
 export async function debateFeatures(input: DebateInput): Promise<DebateOutput> {
-  const { repoAnalysis, suggestedFeatures, agentIds } = input;
+  const { repoAnalysis, suggestedFeatures, agentIds, runId } = input;
 
   // Load both debate personas
   const signalPersona = await loadPersona(process.cwd(), 'debate-signal');
@@ -426,8 +433,8 @@ For EACH feature, provide your assessment.
 `;
 
   const [signalResult, noiseResult] = await Promise.all([
-    callLLM(signalPersona, `FOR each feature:\n${debatePrompt}`, { agentId: agentIds?.signal }),
-    callLLM(noisePersona, `AGAINST each feature (be skeptical):\n${debatePrompt}`, { agentId: agentIds?.noise }),
+    callLLM(signalPersona, `FOR each feature:\n${debatePrompt}`, { agentId: agentIds?.signal, runId }),
+    callLLM(noisePersona, `AGAINST each feature (be skeptical):\n${debatePrompt}`, { agentId: agentIds?.noise, runId }),
   ]);
 
   // Reconciliation: both agents' outputs are fed to a final arbiter. Stream it
@@ -435,7 +442,7 @@ For EACH feature, provide your assessment.
   const reconciliation = await callLLM(
     'You are a pragmatic product manager. Filter signal from noise. Respond in JSON format only.',
     `Repo: ${repoAnalysis.repoStructure}\n\nSignal: ${signalResult}\n\nNoise: ${noiseResult}\n\nDecide which features to APPROVE (have genuine value and scope) and which to REJECT (noise or too ambitious). Respond as JSON with:\n- approvedFeatures: [{name, rationale, priority}]\n- rejectedFeatures: [{name, reason}]`,
-    { agentId: agentIds?.reconcile ?? agentIds?.signal },
+    { agentId: agentIds?.reconcile ?? agentIds?.signal, runId },
   );
 
   try {
@@ -449,7 +456,7 @@ For EACH feature, provide your assessment.
 }
 
 export async function generateTickets(input: TicketsInput): Promise<TicketsOutput> {
-  const { approvedFeatures, agentId } = input;
+  const { approvedFeatures, agentId, runId } = input;
 
   if (approvedFeatures.length === 0) {
     return { tickets: [] };
@@ -472,7 +479,7 @@ For each feature, generate a ticket with:
 Respond ONLY with valid JSON array of tickets.
 `;
 
-  const result = await callLLM(persona, prompt, { agentId });
+  const result = await callLLM(persona, prompt, { agentId, runId });
 
   try {
     const tickets = JSON.parse(result);
@@ -491,7 +498,7 @@ Respond ONLY with valid JSON array of tickets.
 }
 
 export async function scopeArchitecture(input: ScopeInput): Promise<ScopeOutput> {
-  const { tickets, projectPath, worktreePath, agentId } = input;
+  const { tickets, projectPath, worktreePath, agentId, runId } = input;
 
   const persona = await loadPersona(projectPath, 'architect');
 
@@ -515,7 +522,7 @@ For EACH ticket, provide:
 Be specific. Generic plans are useless.
 `;
 
-  const result = await callLLM(persona, prompt, { cwd: projectPath, agentId });
+  const result = await callLLM(persona, prompt, { cwd: projectPath, agentId, runId });
 
   // Try to parse as JSON, fall back to structured parsing
   try {
@@ -542,7 +549,7 @@ Be specific. Generic plans are useless.
 }
 
 export async function implementCode(input: ImplementInput): Promise<ImplementOutput> {
-  const { ticket, worktreePath, projectPath, feedback, testFeedback, agentId } = input;
+  const { ticket, worktreePath, projectPath, feedback, testFeedback, agentId, runId } = input;
 
   const persona = await loadPersona(projectPath, 'developer');
 
@@ -592,7 +599,7 @@ Rules:
 - Outside the markers you may write brief reasoning, but it will be ignored.
 - End with a one-line summary prefixed "SUMMARY: ".`;
 
-  const result = await callLLM(persona, prompt, { cwd: worktreePath, agentId });
+  const result = await callLLM(persona, prompt, { cwd: worktreePath, agentId, runId });
   const edits = parseFileEdits(result);
   if (edits.length === 0) {
     throw new Error(
@@ -605,7 +612,7 @@ Rules:
 }
 
 export async function reviewCode(input: ReviewInput & { worktreePath?: string }): Promise<ReviewResult> {
-  const { implementation, ticket, worktreePath, agentId } = input;
+  const { implementation, ticket, worktreePath, agentId, runId } = input;
 
   const persona = await loadPersona(process.cwd(), 'code-reviewer');
 
@@ -629,7 +636,7 @@ Evaluate against the acceptance criteria. Respond with ONLY a JSON object (no pr
 { "approved": true|false, "comments": ["specific, actionable comment", ...] }
 `;
 
-  const result = stripThinking(await callLLM(persona, prompt, { cwd: worktreePath, agentId }));
+  const result = stripThinking(await callLLM(persona, prompt, { cwd: worktreePath, agentId, runId }));
 
   try {
     const match = result.match(/\{[\s\S]*\}/);

@@ -2,11 +2,13 @@
 // The "primary" provider is resolved from the backend on each call so that
 // changes in Settings take effect without restarting the worker.
 
+import { estimateCost, extractUsageFromPayload, recordCall, type Usage } from './telemetry';
+
 const BACKEND = process.env.ATELIER_BACKEND_URL || 'http://localhost:3001';
 
-type ProviderKind = 'openai-compatible' | 'anthropic' | 'minimax';
+export type ProviderKind = 'openai-compatible' | 'anthropic' | 'minimax';
 
-interface PrimaryProvider {
+export interface PrimaryProvider {
   id: string;
   name: string;
   baseUrl: string;
@@ -18,6 +20,10 @@ export interface CallLLMOptions {
   cwd?: string;
   agentId?: string;
   providerId?: string;
+  /** Workflow run ID — lets per-call telemetry aggregate onto workflow_runs. */
+  runId?: string;
+  /** Sampling temperature; provider-dependent, 0..2. Defaults to provider default. */
+  temperature?: number;
 }
 
 async function emitAgentEvent(id: string, event: { kind: string; [k: string]: any }): Promise<void> {
@@ -134,6 +140,7 @@ function buildRequest(
   apiKey: string,
   system: string,
   user: string,
+  temperature?: number,
 ): { url: string; headers: Record<string, string>; body: string } {
   const model = provider.selectedModel ?? '';
   if (provider.kind === 'minimax') {
@@ -143,6 +150,7 @@ function buildRequest(
       body: JSON.stringify({
         model: model || 'MiniMax-M2.7',
         stream: true,
+        ...(temperature !== undefined ? { temperature } : {}),
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: user },
@@ -162,6 +170,7 @@ function buildRequest(
         model,
         stream: true,
         max_tokens: 8192,
+        ...(temperature !== undefined ? { temperature } : {}),
         system,
         messages: [{ role: 'user', content: user }],
       }),
@@ -174,6 +183,7 @@ function buildRequest(
     body: JSON.stringify({
       model,
       stream: true,
+      ...(temperature !== undefined ? { temperature } : {}),
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: user },
@@ -204,15 +214,18 @@ export async function callLLM(
   opts: CallLLMOptions | string = {},
 ): Promise<string> {
   // Back-compat: a bare string in the 3rd slot used to mean cwd.
-  const { agentId } = typeof opts === 'string' ? {} : opts;
+  const { agentId, runId, temperature } = typeof opts === 'string' ? {} as CallLLMOptions : opts;
 
   const provider = await getPrimaryProvider();
   const apiKey = await getApiKey(provider.id, provider.kind);
-  const { url, headers, body } = buildRequest(provider, apiKey, system, user);
+  const { url, headers, body } = buildRequest(provider, apiKey, system, user, temperature);
 
+  const startedAt = Date.now();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10 * 60 * 1000);
   let full = '';
+  let accumulatedUsage: Usage = { promptTokens: 0, completionTokens: 0 };
+  let errorMsg: string | null = null;
   try {
     const response = await fetch(url, { method: 'POST', headers, body, signal: controller.signal });
     if (!response.ok) {
@@ -269,6 +282,16 @@ export async function callLLM(
             full += delta;
             parser.push(delta);
           }
+          const usage = extractUsageFromPayload(provider.kind, obj);
+          if (usage) {
+            // Anthropic reports prompt_tokens on message_start; output_tokens
+            // arrive on the final message_delta. Keep the max of each field
+            // so we don't clobber earlier-reported values with later zeros.
+            accumulatedUsage = {
+              promptTokens: Math.max(accumulatedUsage.promptTokens, usage.promptTokens),
+              completionTokens: Math.max(accumulatedUsage.completionTokens, usage.completionTokens),
+            };
+          }
         } catch { /* heartbeat or non-JSON line */ }
       }
     }
@@ -279,8 +302,35 @@ export async function callLLM(
       throw new Error(`${provider.name} API returned empty stream`);
     }
     return stripThinking(full);
+  } catch (e) {
+    errorMsg = e instanceof Error ? e.message : String(e);
+    throw e;
   } finally {
     clearTimeout(timer);
+    const completedAt = Date.now();
+    const effectiveRunId = runId ?? process.env.ATELIER_RUN_ID;
+    if (agentId && effectiveRunId) {
+      const costUsd = estimateCost(
+        provider.kind,
+        provider.selectedModel ?? '',
+        accumulatedUsage.promptTokens,
+        accumulatedUsage.completionTokens,
+      );
+      void recordCall(BACKEND, {
+        runId: effectiveRunId,
+        agentId,
+        providerId: provider.id,
+        model: provider.selectedModel ?? '',
+        kind: 'text',
+        promptTokens: accumulatedUsage.promptTokens,
+        completionTokens: accumulatedUsage.completionTokens,
+        costUsd,
+        durationMs: completedAt - startedAt,
+        startedAt,
+        completedAt,
+        error: errorMsg,
+      });
+    }
   }
 }
 
