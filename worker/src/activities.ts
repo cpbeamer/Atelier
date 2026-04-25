@@ -147,6 +147,21 @@ export interface VerifyInput {
   worktreePath: string;
 }
 
+export interface StalledMilestoneInput {
+  runId: string;
+  kind: 'review' | 'test';
+  ticketId: string;
+  ticketTitle: string;
+  lastAttemptSummary: string;
+  panelVerdicts?: unknown;
+}
+
+export interface StalledMilestoneResult {
+  /** 'skip' = continue to next ticket; 'abort' = stop the workflow with a stalled status. */
+  decision: 'skip' | 'abort';
+  reason?: string;
+}
+
 export interface VerifyOutput {
   allPassed: boolean;
   results: Array<{ label: string; passed: boolean; output: string }>;
@@ -1326,6 +1341,58 @@ export async function pushChanges(input: PushInput): Promise<PushResult> {
 
 export async function verifyCode(input: VerifyInput): Promise<VerifyOutput> {
   return runVerify(input.worktreePath);
+}
+
+/**
+ * Called when a review or test loop has exhausted its 3-attempt budget.
+ * Creates a milestone via the backend HTTP API and polls for a human decision.
+ * The milestone existing POST /api/milestone/create endpoint sets status='pending'
+ * and auto-times-out after 7 days; this activity polls /api/milestone/:id at a
+ * reasonable cadence.
+ *
+ * Decision mapping (from the existing binary milestone API):
+ * - status='approved' → decision='skip' (user says "give up on this ticket, move on")
+ * - status='rejected' or 'timed-out' → decision='abort' (user says "stop the run")
+ */
+export async function emitStalledMilestone(input: StalledMilestoneInput): Promise<StalledMilestoneResult> {
+  const created = await fetch(`${BACKEND_URL}/api/milestone/create`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      runId: input.runId,
+      name: `stalled-${input.kind}`,
+      payload: {
+        ticketId: input.ticketId,
+        ticketTitle: input.ticketTitle,
+        lastAttemptSummary: input.lastAttemptSummary,
+        panelVerdicts: input.panelVerdicts,
+        message: `The ${input.kind} loop for ticket "${input.ticketTitle}" exhausted its 3-attempt budget. Approve to skip this ticket and continue; reject to abort the run.`,
+      },
+    }),
+  }).then((r) => r.json()) as { id: string };
+
+  const milestoneId = created.id;
+  // Poll at 5s. Temporal activity timeout is 30min by default, much shorter than
+  // the milestone's 7-day server-side timeout — so we cap polling at ~25min here
+  // and let Temporal's retry policy handle the "no decision in 30min" case by
+  // re-invoking the activity (polling resumes against the same milestone).
+  const hardDeadline = Date.now() + 25 * 60 * 1000;
+  while (Date.now() < hardDeadline) {
+    await new Promise<void>((res) => setTimeout(res, 5000));
+    const state = await fetch(`${BACKEND_URL}/api/milestone/${milestoneId}`)
+      .then((r) => r.json()) as { resolved?: boolean; status?: string; decision?: { verdict?: string; reason?: string } };
+    if (state.resolved) {
+      const verdict = state.decision?.verdict;
+      if (verdict === 'Approved') {
+        return { decision: 'skip', reason: state.decision?.reason ?? 'approved: skip this ticket' };
+      }
+      return { decision: 'abort', reason: state.decision?.reason ?? `${verdict ?? 'rejected'}: abort run` };
+    }
+  }
+  // No decision in 25min — re-throw so Temporal retries the polling. The
+  // milestone ID is regenerated on each retry, which is fine because the user
+  // sees a fresh pending milestone and can decide on the new one.
+  throw new Error(`Stalled milestone ${milestoneId} not decided within activity timeout`);
 }
 
 async function emitAgentEvent(id: string, event: { kind: string; [k: string]: any }): Promise<void> {

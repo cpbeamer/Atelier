@@ -14,6 +14,7 @@ const {
   testCode,
   verifyCode,
   pushChanges,
+  emitStalledMilestone,
   notifyAgentStart,
   notifyAgentComplete,
 } = proxyActivities<typeof activities>({
@@ -129,10 +130,22 @@ export async function autopilotWorkflow(input: AutopilotInput): Promise<Autopilo
       }
     }
     if (!reviewApproved) {
-      return { status: 'stalled', ticketsCreated: scopedTickets.length, stalledReason: `Review loop exceeded for ticket ${ticket.id}` };
+      const decision = await emitStalledMilestone({
+        runId,
+        kind: 'review',
+        ticketId: ticket.id,
+        ticketTitle: ticket.title,
+        lastAttemptSummary: implementation.code.slice(0, 2000),
+      });
+      if (decision.decision === 'abort') {
+        return { status: 'stalled', ticketsCreated: scopedTickets.length, stalledReason: `review stalled: ${decision.reason}` };
+      }
+      // 'skip' — move on to the next ticket without attempting tests on this one
+      continue;
     }
 
     let testsPassed = false;
+    let lastTestFailures: string[] = [];
     for (let testLoop = 0; testLoop < 3 && !testsPassed; testLoop++) {
       await notifyAgentStart({ agentId: 'tester', agentName: 'Tester', terminalType: 'terminal' });
       const testResult = await testCode({ implementation, ticket, worktreePath, runId });
@@ -144,13 +157,27 @@ export async function autopilotWorkflow(input: AutopilotInput): Promise<Autopilo
       if (testResult.allPassed) {
         testsPassed = true;
       } else {
+        lastTestFailures = testResult.failures;
         const fixed = await implementCode({ ticket, worktreePath, projectPath, testFeedback: testResult.failures, agentId: 'developer', runId });
         implementation.code = fixed.code;
         implementation.filesChanged = fixed.filesChanged;
       }
     }
     if (!testsPassed) {
-      return { status: 'stalled', ticketsCreated: scopedTickets.length, stalledReason: `Test loop exceeded for ticket ${ticket.id}` };
+      const decision = await emitStalledMilestone({
+        runId,
+        kind: 'test',
+        ticketId: ticket.id,
+        ticketTitle: ticket.title,
+        lastAttemptSummary: `Last test failures:\n${lastTestFailures.join('\n')}`,
+      });
+      if (decision.decision === 'abort') {
+        return { status: 'stalled', ticketsCreated: scopedTickets.length, stalledReason: `test stalled: ${decision.reason}` };
+      }
+      // 'skip' — accept the failing ticket and move on. The verifier + reviewer
+      // already caught everything they could; if the user explicitly approves
+      // skipping, that's an informed decision.
+      continue;
     }
   }
 
