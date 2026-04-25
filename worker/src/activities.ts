@@ -616,21 +616,81 @@ Be specific. Generic plans are useless. Respond with ONLY a JSON array, one entr
     complexity?: 'low' | 'medium' | 'high';
   };
 
-  const parsed = await withJsonRetry<ArchitectEntry[]>(
-    (suffix) => callLLM(persona, `${prompt}${suffix ?? ''}`, { cwd: projectPath, agentId, runId }),
-    {
-      maxAttempts: 3,
-      validate: (v) => Array.isArray(v) && v.length === tickets.length,
-    },
-  );
+  // Best-of-3 with a judge. Three parallel architects at spread temperatures
+  // produce candidate plans; a judge picks/synthesizes the best. On a small
+  // repo with cheap tokens (MiniMax M2.7) this buys real accuracy at trivial
+  // cost — the whole phase fans out + joins in the time of one sequential call.
+  const candidateTemps = [0.2, 0.6, 0.9] as const;
+  const candidates = await Promise.all(candidateTemps.map(async (temperature, idx) => {
+    const subAgentId = `architect-${idx + 1}`;
+    await notifyAgentStart({
+      agentId: subAgentId,
+      agentName: `Architect #${idx + 1} (temp=${temperature})`,
+      terminalType: 'direct-llm',
+    });
+    try {
+      const plan = await withJsonRetry<ArchitectEntry[]>(
+        (suffix) => callLLM(persona, `${prompt}${suffix ?? ''}`, {
+          cwd: projectPath, agentId: subAgentId, runId, temperature,
+        }),
+        {
+          maxAttempts: 2,
+          validate: (v) => Array.isArray(v) && v.length === tickets.length,
+        },
+      );
+      await notifyAgentComplete({
+        agentId: subAgentId,
+        status: 'completed',
+        output: JSON.stringify(plan).slice(0, 500),
+      });
+      return plan;
+    } catch (e) {
+      await notifyAgentComplete({
+        agentId: subAgentId,
+        status: 'error',
+        output: String(e).slice(0, 500),
+      });
+      return null;
+    }
+  }));
+
+  const validCandidates = candidates.filter((c): c is ArchitectEntry[] => c !== null);
+  if (validCandidates.length === 0) {
+    throw new NonRetryableAgentError('All architect candidates failed to produce valid plans');
+  }
+
+  // If only one candidate survived, skip the judge round-trip.
+  let chosen: ArchitectEntry[];
+  if (validCandidates.length === 1) {
+    chosen = validCandidates[0];
+  } else {
+    const judgePersona = await loadPersona(projectPath, 'architect-judge');
+    const judgePrompt = `Tickets:\n${JSON.stringify(tickets, null, 2)}\n\nCandidate plans:\n${validCandidates.map((c, i) => `=== PLAN ${i + 1} ===\n${JSON.stringify(c, null, 2)}`).join('\n\n')}`;
+    const judgeAgentId = agentId ?? 'architect';
+    try {
+      chosen = await withJsonRetry<ArchitectEntry[]>(
+        (suffix) => callLLM(judgePersona, `${judgePrompt}${suffix ?? ''}`, {
+          cwd: projectPath, agentId: judgeAgentId, runId,
+        }),
+        {
+          maxAttempts: 2,
+          validate: (v) => Array.isArray(v) && v.length === tickets.length,
+        },
+      );
+    } catch {
+      // Judge failed validation — pick the first valid candidate rather than
+      // blocking on a meta-agent. Every ticket still gets a plan.
+      chosen = validCandidates[0];
+    }
+  }
 
   return {
     scopedTickets: tickets.map((t, i) => ({
       ...t,
-      technicalPlan: parsed[i]?.technicalPlan || 'Plan pending',
-      filesToChange: parsed[i]?.filesToChange ?? [],
-      dependencies: parsed[i]?.dependencies ?? [],
-      complexity: parsed[i]?.complexity ?? 'medium',
+      technicalPlan: chosen[i]?.technicalPlan || 'Plan pending',
+      filesToChange: chosen[i]?.filesToChange ?? [],
+      dependencies: chosen[i]?.dependencies ?? [],
+      complexity: chosen[i]?.complexity ?? 'medium',
     })),
   };
 }
