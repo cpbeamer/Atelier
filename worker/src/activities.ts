@@ -165,6 +165,7 @@ import { callLLM, getPrimaryModelName } from './llm/callLLM.js';
 import { withJsonRetry } from './llm/withJsonRetry.js';
 import { NonRetryableAgentError } from './errors.js';
 import { runVerify } from './verify.js';
+import { loadPersona, loadPanel } from './personaLoader.js';
 
 async function readFile(filePath: string): Promise<string> {
   return fs.promises.readFile(filePath, 'utf-8');
@@ -255,17 +256,6 @@ async function listDir(dirPath: string): Promise<string[]> {
     return entries.map(e => e.name);
   } catch {
     return [];
-  }
-}
-
-async function loadPersona(projectPath: string, personaKey: string): Promise<string> {
-  const personaPath = path.join(projectPath, '.atelier', 'agents', `${personaKey}.md`);
-  try {
-    return await fs.promises.readFile(personaPath, 'utf-8');
-  } catch {
-    // Fall back to bundled persona
-    const bundledPath = path.join(process.cwd(), 'src', '.atelier', 'agents', `${personaKey}.md`);
-    return fs.promises.readFile(bundledPath, 'utf-8');
   }
 }
 
