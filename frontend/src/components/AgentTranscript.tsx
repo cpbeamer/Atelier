@@ -32,7 +32,22 @@ export function AgentTranscript({ agentId, isActive }: Props) {
     setEvents([]);
     const unsub = subscribe('agent-event', (payload: { id: string; event: AgentEvent }) => {
       if (payload.id !== agentId) return;
-      setEvents((prev) => [...prev, payload.event]);
+      setEvents((prev) => {
+        // Streaming deltas arrive coalesced at ~80ms intervals. Merge adjacent
+        // same-kind chunks so the transcript renders as one flowing block per
+        // run, not a stack of sparkle-prefixed slivers.
+        const last = prev[prev.length - 1];
+        const incoming = payload.event;
+        if (
+          last &&
+          (incoming.kind === 'text' || incoming.kind === 'thinking') &&
+          last.kind === incoming.kind
+        ) {
+          const merged = { ...last, text: last.text + incoming.text, ts: incoming.ts };
+          return [...prev.slice(0, -1), merged as AgentEvent];
+        }
+        return [...prev, incoming];
+      });
     });
     send('agent-subscribe', { id: agentId });
     return unsub;

@@ -7,6 +7,7 @@ export interface MilestoneDecision {
 export interface ResearchInput {
   projectPath: string;
   userContext?: Record<string, string>;
+  agentId?: string;
 }
 
 export interface ResearchOutput {
@@ -20,6 +21,7 @@ export interface ResearchOutput {
 export interface DebateInput {
   repoAnalysis: ResearchOutput;
   suggestedFeatures: string[];
+  agentIds?: { signal?: string; noise?: string; reconcile?: string };
 }
 
 export interface DebateOutput {
@@ -37,6 +39,7 @@ export interface Ticket {
 
 export interface TicketsInput {
   approvedFeatures: DebateOutput['approvedFeatures'];
+  agentId?: string;
 }
 
 export interface TicketsOutput {
@@ -53,6 +56,7 @@ export interface ScopeInput {
   tickets: Ticket[];
   projectPath: string;
   worktreePath: string;
+  agentId?: string;
 }
 
 export interface ScopeOutput {
@@ -71,6 +75,7 @@ export interface ImplementInput {
   projectPath: string;
   feedback?: string[];
   testFeedback?: string[];
+  agentId?: string;
 }
 
 export interface ImplementOutput {
@@ -86,6 +91,7 @@ export interface ReviewResult {
 export interface ReviewInput {
   implementation: Implementation;
   ticket: ScopedTicket;
+  agentId?: string;
 }
 
 export interface TestResult {
@@ -311,10 +317,73 @@ async function getMinimaxKey(): Promise<string> {
   throw new Error('MiniMax API key not configured. Set MINIMAX_API_KEY or add it in Settings.');
 }
 
-export async function callMiniMax(system: string, user: string, _cwd?: string): Promise<string> {
+// Splits an incoming token stream into 'text' and 'thinking' chunks across
+// `<think>…</think>` boundaries that may land mid-token. Safe on delta streams:
+// holds back up to TAG_LEN-1 bytes when a partial tag could be forming.
+function createThinkStreamParser(onChunk: (kind: 'text' | 'thinking', chunk: string) => void) {
+  const OPEN = '<think>';
+  const CLOSE = '</think>';
+  let buffer = '';
+  let inThink = false;
+  return {
+    push(delta: string) {
+      buffer += delta;
+      while (buffer.length > 0) {
+        if (!inThink) {
+          const idx = buffer.indexOf(OPEN);
+          if (idx === -1) {
+            const safe = Math.max(0, buffer.length - (OPEN.length - 1));
+            if (safe > 0) {
+              onChunk('text', buffer.slice(0, safe));
+              buffer = buffer.slice(safe);
+            }
+            return;
+          }
+          if (idx > 0) onChunk('text', buffer.slice(0, idx));
+          buffer = buffer.slice(idx + OPEN.length);
+          inThink = true;
+        } else {
+          const idx = buffer.indexOf(CLOSE);
+          if (idx === -1) {
+            const safe = Math.max(0, buffer.length - (CLOSE.length - 1));
+            if (safe > 0) {
+              onChunk('thinking', buffer.slice(0, safe));
+              buffer = buffer.slice(safe);
+            }
+            return;
+          }
+          if (idx > 0) onChunk('thinking', buffer.slice(0, idx));
+          buffer = buffer.slice(idx + CLOSE.length);
+          inThink = false;
+        }
+      }
+    },
+    flush() {
+      if (buffer.length > 0) {
+        onChunk(inThink ? 'thinking' : 'text', buffer);
+        buffer = '';
+      }
+    },
+  };
+}
+
+export interface CallMiniMaxOptions {
+  cwd?: string;
+  agentId?: string;
+}
+
+export async function callMiniMax(
+  system: string,
+  user: string,
+  opts: CallMiniMaxOptions | string = {},
+): Promise<string> {
+  // Back-compat: a bare string in the 3rd slot used to mean cwd.
+  const { agentId } = typeof opts === 'string' ? {} : opts;
+
   const apiKey = await getMinimaxKey();
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 5 * 60 * 1000);
+  const timer = setTimeout(() => controller.abort(), 10 * 60 * 1000);
+  let full = '';
   try {
     const response = await fetch(MINIMAX_ENDPOINT, {
       method: 'POST',
@@ -324,6 +393,7 @@ export async function callMiniMax(system: string, user: string, _cwd?: string): 
       },
       body: JSON.stringify({
         model: MINIMAX_MODEL,
+        stream: true,
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: user },
@@ -335,12 +405,66 @@ export async function callMiniMax(system: string, user: string, _cwd?: string): 
       const text = await response.text().catch(() => '');
       throw new Error(`MiniMax API error ${response.status}: ${text}`);
     }
-    const data: any = await response.json();
-    const content = data?.choices?.[0]?.message?.content;
-    if (typeof content !== 'string') {
-      throw new Error(`MiniMax API returned unexpected shape: ${JSON.stringify(data).slice(0, 500)}`);
+    if (!response.body) throw new Error('MiniMax API returned no body');
+
+    // Coalesce per-token deltas into ~80ms batches. One event per token would
+    // blow past the scrollback buffer (MAX_BUFFER=2000) and rerender the
+    // transcript on every chunk. Flush when kind flips or the interval elapses.
+    const FLUSH_MS = 80;
+    let pendingKind: 'text' | 'thinking' | null = null;
+    let pendingText = '';
+    let lastFlush = Date.now();
+    const flushPending = () => {
+      if (!pendingKind || !pendingText || !agentId) {
+        pendingKind = null;
+        pendingText = '';
+        return;
+      }
+      void emitAgentEvent(agentId, { kind: pendingKind, text: pendingText });
+      pendingKind = null;
+      pendingText = '';
+      lastFlush = Date.now();
+    };
+    const parser = createThinkStreamParser((kind, chunk) => {
+      if (!chunk) return;
+      if (pendingKind && pendingKind !== kind) flushPending();
+      pendingKind = kind;
+      pendingText += chunk;
+      if (Date.now() - lastFlush >= FLUSH_MS) flushPending();
+    });
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let sseBuf = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      sseBuf += decoder.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = sseBuf.indexOf('\n')) !== -1) {
+        const line = sseBuf.slice(0, nl).trimEnd();
+        sseBuf = sseBuf.slice(nl + 1);
+        if (!line || !line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === '[DONE]') continue;
+        try {
+          const obj: any = JSON.parse(payload);
+          const delta: unknown = obj?.choices?.[0]?.delta?.content;
+          if (typeof delta === 'string' && delta.length > 0) {
+            full += delta;
+            parser.push(delta);
+          }
+        } catch { /* heartbeat or non-JSON line */ }
+      }
     }
-    return stripThinking(content);
+    parser.flush();
+    flushPending();
+
+    if (full.length === 0) {
+      throw new Error('MiniMax API returned empty stream');
+    }
+    return stripThinking(full);
   } finally {
     clearTimeout(timer);
   }
@@ -376,7 +500,7 @@ export async function spawnAgent(
 // Stub implementations - replace with real agent logic in later tasks
 
 export async function researchRepo(input: ResearchInput): Promise<ResearchOutput> {
-  const { projectPath, userContext = {} } = input;
+  const { projectPath, userContext = {}, agentId } = input;
 
   // Read key files
   const readme = await readFile(path.join(projectPath, 'README.md')).catch(() => '');
@@ -422,7 +546,7 @@ Format your response as JSON with fields: repoStructure, currentFeatures, gaps, 
 `;
 
   const persona = await loadPersona(projectPath, 'researcher');
-  const result = await callMiniMax(persona, researchPrompt, projectPath);
+  const result = await callMiniMax(persona, researchPrompt, { cwd: projectPath, agentId });
 
   // Parse the result
   try {
@@ -446,7 +570,7 @@ Format your response as JSON with fields: repoStructure, currentFeatures, gaps, 
 }
 
 export async function debateFeatures(input: DebateInput): Promise<DebateOutput> {
-  const { repoAnalysis, suggestedFeatures } = input;
+  const { repoAnalysis, suggestedFeatures, agentIds } = input;
 
   // Load both debate personas
   const signalPersona = await loadPersona(process.cwd(), 'debate-signal');
@@ -470,14 +594,16 @@ For EACH feature, provide your assessment.
 `;
 
   const [signalResult, noiseResult] = await Promise.all([
-    callMiniMax(signalPersona, `FOR each feature:\n${debatePrompt}`),
-    callMiniMax(noisePersona, `AGAINST each feature (be skeptical):\n${debatePrompt}`),
+    callMiniMax(signalPersona, `FOR each feature:\n${debatePrompt}`, { agentId: agentIds?.signal }),
+    callMiniMax(noisePersona, `AGAINST each feature (be skeptical):\n${debatePrompt}`, { agentId: agentIds?.noise }),
   ]);
 
-  // Reconciliation: both agents' outputs are fed to a final arbiter
+  // Reconciliation: both agents' outputs are fed to a final arbiter. Stream it
+  // into the signal pane by default so the user can see the arbiter reasoning.
   const reconciliation = await callMiniMax(
     'You are a pragmatic product manager. Filter signal from noise. Respond in JSON format only.',
-    `Repo: ${repoAnalysis.repoStructure}\n\nSignal: ${signalResult}\n\nNoise: ${noiseResult}\n\nDecide which features to APPROVE (have genuine value and scope) and which to REJECT (noise or too ambitious). Respond as JSON with:\n- approvedFeatures: [{name, rationale, priority}]\n- rejectedFeatures: [{name, reason}]`
+    `Repo: ${repoAnalysis.repoStructure}\n\nSignal: ${signalResult}\n\nNoise: ${noiseResult}\n\nDecide which features to APPROVE (have genuine value and scope) and which to REJECT (noise or too ambitious). Respond as JSON with:\n- approvedFeatures: [{name, rationale, priority}]\n- rejectedFeatures: [{name, reason}]`,
+    { agentId: agentIds?.reconcile ?? agentIds?.signal },
   );
 
   try {
@@ -491,7 +617,7 @@ For EACH feature, provide your assessment.
 }
 
 export async function generateTickets(input: TicketsInput): Promise<TicketsOutput> {
-  const { approvedFeatures } = input;
+  const { approvedFeatures, agentId } = input;
 
   if (approvedFeatures.length === 0) {
     return { tickets: [] };
@@ -514,7 +640,7 @@ For each feature, generate a ticket with:
 Respond ONLY with valid JSON array of tickets.
 `;
 
-  const result = await callMiniMax(persona, prompt);
+  const result = await callMiniMax(persona, prompt, { agentId });
 
   try {
     const tickets = JSON.parse(result);
@@ -533,7 +659,7 @@ Respond ONLY with valid JSON array of tickets.
 }
 
 export async function scopeArchitecture(input: ScopeInput): Promise<ScopeOutput> {
-  const { tickets, projectPath, worktreePath } = input;
+  const { tickets, projectPath, worktreePath, agentId } = input;
 
   const persona = await loadPersona(projectPath, 'architect');
 
@@ -557,7 +683,7 @@ For EACH ticket, provide:
 Be specific. Generic plans are useless.
 `;
 
-  const result = await callMiniMax(persona, prompt, projectPath);
+  const result = await callMiniMax(persona, prompt, { cwd: projectPath, agentId });
 
   // Try to parse as JSON, fall back to structured parsing
   try {
@@ -584,7 +710,7 @@ Be specific. Generic plans are useless.
 }
 
 export async function implementCode(input: ImplementInput): Promise<ImplementOutput> {
-  const { ticket, worktreePath, projectPath, feedback, testFeedback } = input;
+  const { ticket, worktreePath, projectPath, feedback, testFeedback, agentId } = input;
 
   const persona = await loadPersona(projectPath, 'developer');
 
@@ -634,7 +760,7 @@ Rules:
 - Outside the markers you may write brief reasoning, but it will be ignored.
 - End with a one-line summary prefixed "SUMMARY: ".`;
 
-  const result = await callMiniMax(persona, prompt, worktreePath);
+  const result = await callMiniMax(persona, prompt, { cwd: worktreePath, agentId });
   const edits = parseFileEdits(result);
   if (edits.length === 0) {
     throw new Error(
@@ -647,7 +773,7 @@ Rules:
 }
 
 export async function reviewCode(input: ReviewInput & { worktreePath?: string }): Promise<ReviewResult> {
-  const { implementation, ticket, worktreePath } = input;
+  const { implementation, ticket, worktreePath, agentId } = input;
 
   const persona = await loadPersona(process.cwd(), 'code-reviewer');
 
@@ -671,7 +797,7 @@ Evaluate against the acceptance criteria. Respond with ONLY a JSON object (no pr
 { "approved": true|false, "comments": ["specific, actionable comment", ...] }
 `;
 
-  const result = stripThinking(await callMiniMax(persona, prompt, worktreePath));
+  const result = stripThinking(await callMiniMax(persona, prompt, { cwd: worktreePath, agentId }));
 
   try {
     const match = result.match(/\{[\s\S]*\}/);
