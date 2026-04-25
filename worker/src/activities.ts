@@ -498,44 +498,88 @@ function fallbackSynthesizeResearch(
 }
 
 
+const DEBATE_SPECIALISTS = ['signal', 'noise', 'security', 'perf', 'ux', 'maintainability'] as const;
+type DebateSpecialist = typeof DEBATE_SPECIALISTS[number];
+
 export async function debateFeatures(input: DebateInput): Promise<DebateOutput> {
   const { repoAnalysis, suggestedFeatures, agentIds, runId } = input;
-
-  // Load both debate personas
-  const signalPersona = await loadPersona(process.cwd(), 'debate-signal');
-  const noisePersona = await loadPersona(process.cwd(), 'debate-noise');
 
   const featuresToDebate = suggestedFeatures.length > 0
     ? suggestedFeatures
     : repoAnalysis.opportunities;
 
-  // Run both agents in parallel
+  if (featuresToDebate.length === 0) {
+    return { approvedFeatures: [], rejectedFeatures: [] };
+  }
+
+  const panel = await loadPanel(process.cwd(), 'debate', DEBATE_SPECIALISTS);
+
   const debatePrompt = `
-You are debating features for this project:
+You are assessing features for this project.
 
 REPO ANALYSIS:
 ${JSON.stringify(repoAnalysis, null, 2)}
 
-FEATURES TO DEBATE:
+FEATURES TO ASSESS:
 ${featuresToDebate.map((f, i) => `${i + 1}. ${f}`).join('\n')}
 
-For EACH feature, provide your assessment.
+For EACH feature, provide your specialist-scoped assessment in the JSON shape your persona specifies.
 `;
 
-  const [signalResult, noiseResult] = await Promise.all([
-    callLLM(signalPersona, `FOR each feature:\n${debatePrompt}`, { agentId: agentIds?.signal, runId }),
-    callLLM(noisePersona, `AGAINST each feature (be skeptical):\n${debatePrompt}`, { agentId: agentIds?.noise, runId }),
-  ]);
+  // Fan out to all 6 specialists in parallel. signal/noise keep their existing
+  // agentIds (so prior UI panels still light up); the new specialists stream
+  // into their own 'debate-<name>' panes.
+  const specialistAgentIds: Record<DebateSpecialist, string> = {
+    signal: agentIds?.signal ?? 'debate-signal',
+    noise: agentIds?.noise ?? 'debate-noise',
+    security: 'debate-security',
+    perf: 'debate-perf',
+    ux: 'debate-ux',
+    maintainability: 'debate-maintainability',
+  };
 
-  // Reconciliation: both agents' outputs are fed to a final arbiter. Stream it
-  // into the signal pane by default so the user can see the arbiter reasoning.
-  const reconcilePrompt = `Repo: ${repoAnalysis.repoStructure}\n\nSignal: ${signalResult}\n\nNoise: ${noiseResult}\n\nDecide which features to APPROVE (have genuine value and scope) and which to REJECT (noise or too ambitious). Respond as JSON with:\n- approvedFeatures: [{name, rationale, priority}]\n- rejectedFeatures: [{name, reason}]`;
+  const assessments = await Promise.all(DEBATE_SPECIALISTS.map(async (specialist) => {
+    const sAgentId = specialistAgentIds[specialist];
+    // signal/noise already get notifyAgentStart from the workflow. New
+    // specialists need their own since the workflow doesn't know about them.
+    const isNew = specialist !== 'signal' && specialist !== 'noise';
+    if (isNew) {
+      await notifyAgentStart({ agentId: sAgentId, agentName: `Debate (${specialist})`, terminalType: 'direct-llm' });
+    }
+    try {
+      const out = await withJsonRetry<Record<string, unknown>>(
+        (suffix) => callLLM(panel[specialist], `${debatePrompt}${suffix ?? ''}`, {
+          agentId: sAgentId, runId,
+        }),
+        {
+          maxAttempts: 2,
+          validate: (v) => typeof v === 'object' && v !== null && 'assessments' in (v as object),
+        },
+      );
+      if (isNew) {
+        await notifyAgentComplete({ agentId: sAgentId, status: 'completed', output: JSON.stringify(out).slice(0, 500) });
+      }
+      return [specialist, out] as const;
+    } catch (e) {
+      if (isNew) {
+        await notifyAgentComplete({ agentId: sAgentId, status: 'error', output: String(e).slice(0, 500) });
+      }
+      return [specialist, { error: String(e), assessments: [] }] as const;
+    }
+  }));
+
+  const assessmentMap = Object.fromEntries(assessments) as Record<DebateSpecialist, Record<string, unknown>>;
+
+  // Reconcile — a 7th LLM call that weighs the six lenses into a single
+  // approve/reject list. Streams into the reconcile/signal pane for continuity.
+  const reconcilerPersona = await loadPersona(process.cwd(), 'debate-reconciler');
+  const reconcilePrompt = `Repo: ${repoAnalysis.repoStructure}\n\nFeatures assessed:\n${featuresToDebate.map((f, i) => `${i + 1}. ${f}`).join('\n')}\n\nSpecialist assessments:\n${JSON.stringify(assessmentMap, null, 2)}`;
 
   return await withJsonRetry<DebateOutput>(
     (suffix) => callLLM(
-      'You are a pragmatic product manager. Filter signal from noise. Respond in JSON format only.',
+      reconcilerPersona,
       `${reconcilePrompt}${suffix ?? ''}`,
-      { agentId: agentIds?.reconcile ?? agentIds?.signal, runId },
+      { agentId: agentIds?.reconcile ?? agentIds?.signal ?? 'debate-reconciler', runId },
     ),
     {
       maxAttempts: 3,
