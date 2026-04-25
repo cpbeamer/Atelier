@@ -22,7 +22,7 @@ The worker probes `opencode --version` at boot. If it's not on PATH, the worker 
 
 Set `ATELIER_USE_OPENCODE=1` in the worker's environment to route the implementer through opencode. Unset (or `=0`) to revert to the legacy `callLLM` + `BEGIN FILE / END FILE` parsing path. Both paths coexist for v1.
 
-A settings-UI toggle is planned (Task 9 of the transition plan); until then, configure via env var.
+A settings-UI toggle is planned but not yet wired (Task 9 of the transition plan); for now, configure via env var on the worker.
 
 ## Provider configuration
 
@@ -52,9 +52,17 @@ The API key is resolved from keytar / settings and passed to the opencode subpro
 
 - `minimax`, `openai-compatible` → `@ai-sdk/openai-compatible`
 - `anthropic` → `@ai-sdk/anthropic`
-- `openai` → `@ai-sdk/openai`
+
+`kind` is currently `minimax`, `openai-compatible`, or `anthropic` (see `worker/src/llm/callLLM.ts`). Adding a new kind is a single-line change to `NPM_PACKAGE_FOR_KIND` in `worker/src/llm/opencodeConfig.ts`; unknown kinds default to `@ai-sdk/openai-compatible`.
 
 ## Tradeoffs
 
-- **Telemetry**: opencode runs don't currently report token usage to `/api/agent/call`, so the `agent_calls` table is missing implementer rows when opencode is on. Cost-by-agent panels under-report by the implementer's share. (Future work — see Task 10 + Open Decisions in the transition plan.)
-- **AGENTS.md**: opencode reads `AGENTS.md` at the project root for system instructions. We write the developer persona there per-run *only if no existing `AGENTS.md` is present* — the user's project instructions always win.
+- **Telemetry under-reports the implementer.** Direct `callLLM` calls (researcher panel, debate, architect, reviewer panel, judge, verifier) all flow per-call token + cost rows into the `agent_calls` table. opencode runs don't — the `runOpenCodeAgent` subprocess holds its own session DB and emits to its own `opencode stats`, so when `ATELIER_USE_OPENCODE=1` the cost-by-agent panel for the `developer` row will be empty (or stale from previous direct-LLM runs). Aggregate `workflow_runs.total_tokens` is similarly under-reported by the implementer's share.
+
+  The right fix is to switch to `opencode serve` + `@opencode-ai/sdk` and forward usage events into `/api/agent/call` from there. That adds a long-running opencode daemon to manage; v1 lives without it.
+
+- **AGENTS.md collision.** opencode reads `AGENTS.md` at the project root for system instructions. `writeAgentsRules` only writes ours if the worktree doesn't already have one — if the user's project ships its own `AGENTS.md`, theirs wins, since their instructions are more authoritative than our scoped persona. The trade is that custom developer personas living in `worker/src/.atelier/agents/developer.md` are silently ignored on those projects; that's the right call but worth knowing when debugging "why isn't my persona being applied?"
+
+- **Best-of-N is disabled under opencode.** `implementCodeBestOfN` short-circuits to a single `implementCode` call when the flag is on. Spawning N parallel candidates needs per-ticket sub-worktrees to avoid racing on the shared git index — deferred until single-pass quality is shown to be insufficient.
+
+- **Self-critique was removed.** Not specific to opencode — see commit `e020848`. The reviewer panel + verifier loop replaces what self-critique was hedging against, and opencode's internal iteration covers it directly on the new path.
