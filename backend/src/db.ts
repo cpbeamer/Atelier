@@ -61,6 +61,25 @@ function migrate() {
     CREATE INDEX IF NOT EXISTS idx_runs_project ON workflow_runs(project_id, started_at DESC);
     CREATE INDEX IF NOT EXISTS idx_milestones_pending ON milestones(status);
 
+    CREATE TABLE IF NOT EXISTS agent_calls (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      provider_id TEXT NOT NULL,
+      model TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'text',
+      prompt_tokens INTEGER DEFAULT 0,
+      completion_tokens INTEGER DEFAULT 0,
+      cost_usd REAL DEFAULT 0,
+      duration_ms INTEGER DEFAULT 0,
+      started_at INTEGER NOT NULL,
+      completed_at INTEGER,
+      error TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_calls_run ON agent_calls(run_id, started_at);
+    CREATE INDEX IF NOT EXISTS idx_agent_calls_agent ON agent_calls(agent_id, started_at);
+
     CREATE TABLE IF NOT EXISTS model_config (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -181,6 +200,61 @@ export const modelConfig = {
     `).run(id, name, baseUrl, kind, modelsJson),
   removeCustom: (id: string) =>
     getDb().prepare('DELETE FROM model_config WHERE id=? AND is_custom=1').run(id),
+};
+
+export interface AgentCallRecord {
+  runId: string;
+  agentId: string;
+  providerId: string;
+  model: string;
+  kind?: string;
+  promptTokens: number;
+  completionTokens: number;
+  costUsd: number;
+  durationMs: number;
+  startedAt: number;
+  completedAt: number;
+  error?: string | null;
+}
+
+export const agentCalls = {
+  record: (row: AgentCallRecord) => {
+    const tx = getDb().transaction((r: AgentCallRecord) => {
+      getDb().prepare(`
+        INSERT INTO agent_calls
+        (run_id, agent_id, provider_id, model, kind, prompt_tokens, completion_tokens, cost_usd, duration_ms, started_at, completed_at, error)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        r.runId, r.agentId, r.providerId, r.model, r.kind ?? 'text',
+        r.promptTokens, r.completionTokens, r.costUsd, r.durationMs,
+        r.startedAt, r.completedAt, r.error ?? null,
+      );
+      // Aggregate onto workflow_runs. Safe no-op if the run row doesn't exist yet.
+      getDb().prepare(`
+        UPDATE workflow_runs
+        SET total_tokens = total_tokens + ?, total_cost_usd = total_cost_usd + ?
+        WHERE id = ?
+      `).run(r.promptTokens + r.completionTokens, r.costUsd, r.runId);
+    });
+    tx(row);
+  },
+  totalsForRun: (runId: string) =>
+    getDb().prepare('SELECT total_tokens, total_cost_usd FROM workflow_runs WHERE id = ?').get(runId) as
+      | { total_tokens: number; total_cost_usd: number }
+      | undefined,
+  byAgentForRun: (runId: string) =>
+    getDb().prepare(`
+      SELECT agent_id,
+             SUM(prompt_tokens + completion_tokens) AS tokens,
+             SUM(cost_usd) AS cost,
+             COUNT(*) AS calls
+      FROM agent_calls
+      WHERE run_id = ?
+      GROUP BY agent_id
+      ORDER BY cost DESC
+    `).all(runId),
+  listByRun: (runId: string, limit = 500) =>
+    getDb().prepare('SELECT * FROM agent_calls WHERE run_id = ? ORDER BY started_at LIMIT ?').all(runId, limit),
 };
 
 export const projectContext = {
