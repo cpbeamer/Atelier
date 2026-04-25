@@ -304,13 +304,24 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
-  // POST /api/pty/spawn
+  // POST /api/pty/spawn — two payload shapes:
+  //   { id, command, args, cwd?, env? }     raw spawn (opencode + future tools)
+  //   { id, persona, task, cwd? }           legacy claude-CLI-via-shell
   if (req.method === 'POST' && url.pathname === '/api/pty/spawn') {
     let body = '';
     req.on('data', chunk => { body += chunk; });
     req.on('end', async () => {
       try {
-        const { id, persona, task, cwd } = JSON.parse(body);
+        const parsed = JSON.parse(body);
+        if (typeof parsed.command === 'string') {
+          const { id, command, args = [], cwd, env = {} } = parsed;
+          ptyManager.spawn(id, command, args, cwd, env);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ spawned: true, ptyId: id }));
+          return;
+        }
+
+        const { id, persona, task, cwd } = parsed;
         const personaPath = path.join(process.cwd(), 'src', '.atelier', 'agents', `${persona}.md`);
         const personaContent = fs.readFileSync(personaPath, 'utf-8');
         const fullPrompt = `${personaContent}\n\n---\n\n${task}`;
