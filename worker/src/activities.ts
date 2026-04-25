@@ -53,6 +53,8 @@ export interface ScopedTicket extends Ticket {
   technicalPlan: string;
   filesToChange: string[];
   dependencies: string[];
+  /** Architect-estimated implementation complexity. Drives best-of-N gating. */
+  complexity?: 'low' | 'medium' | 'high';
 }
 
 export interface ScopeInput {
@@ -151,6 +153,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { callLLM, getPrimaryModelName } from './llm/callLLM.js';
+import { withJsonRetry } from './llm/withJsonRetry.js';
 
 async function readFile(filePath: string): Promise<string> {
   return fs.promises.readFile(filePath, 'utf-8');
@@ -439,20 +442,22 @@ For EACH feature, provide your assessment.
 
   // Reconciliation: both agents' outputs are fed to a final arbiter. Stream it
   // into the signal pane by default so the user can see the arbiter reasoning.
-  const reconciliation = await callLLM(
-    'You are a pragmatic product manager. Filter signal from noise. Respond in JSON format only.',
-    `Repo: ${repoAnalysis.repoStructure}\n\nSignal: ${signalResult}\n\nNoise: ${noiseResult}\n\nDecide which features to APPROVE (have genuine value and scope) and which to REJECT (noise or too ambitious). Respond as JSON with:\n- approvedFeatures: [{name, rationale, priority}]\n- rejectedFeatures: [{name, reason}]`,
-    { agentId: agentIds?.reconcile ?? agentIds?.signal, runId },
-  );
+  const reconcilePrompt = `Repo: ${repoAnalysis.repoStructure}\n\nSignal: ${signalResult}\n\nNoise: ${noiseResult}\n\nDecide which features to APPROVE (have genuine value and scope) and which to REJECT (noise or too ambitious). Respond as JSON with:\n- approvedFeatures: [{name, rationale, priority}]\n- rejectedFeatures: [{name, reason}]`;
 
-  try {
-    return JSON.parse(reconciliation);
-  } catch {
-    return {
-      approvedFeatures: featuresToDebate.slice(0, 3).map(f => ({ name: f, rationale: 'Default approved', priority: 'medium' as const })),
-      rejectedFeatures: [],
-    };
-  }
+  return await withJsonRetry<DebateOutput>(
+    (suffix) => callLLM(
+      'You are a pragmatic product manager. Filter signal from noise. Respond in JSON format only.',
+      `${reconcilePrompt}${suffix ?? ''}`,
+      { agentId: agentIds?.reconcile ?? agentIds?.signal, runId },
+    ),
+    {
+      maxAttempts: 3,
+      validate: (v): v is DebateOutput =>
+        typeof v === 'object' && v !== null
+        && Array.isArray((v as any).approvedFeatures)
+        && Array.isArray((v as any).rejectedFeatures),
+    },
+  );
 }
 
 export async function generateTickets(input: TicketsInput): Promise<TicketsOutput> {
@@ -479,22 +484,16 @@ For each feature, generate a ticket with:
 Respond ONLY with valid JSON array of tickets.
 `;
 
-  const result = await callLLM(persona, prompt, { agentId, runId });
-
-  try {
-    const tickets = JSON.parse(result);
-    return { tickets };
-  } catch {
-    return {
-      tickets: approvedFeatures.map((f, i) => ({
-        id: `TICKET-${i + 1}`,
-        title: f.name,
-        description: f.rationale,
-        acceptanceCriteria: ['Implementation complete'],
-        estimate: f.priority === 'high' ? 'L' : 'M',
-      })),
-    };
-  }
+  const tickets = await withJsonRetry<Ticket[]>(
+    (suffix) => callLLM(persona, `${prompt}${suffix ?? ''}`, { agentId, runId }),
+    {
+      maxAttempts: 3,
+      validate: (v): v is Ticket[] =>
+        Array.isArray(v)
+        && v.every((t) => typeof t === 'object' && t !== null && 'id' in t && 'title' in t && 'acceptanceCriteria' in t),
+    },
+  );
+  return { tickets };
 }
 
 export async function scopeArchitecture(input: ScopeInput): Promise<ScopeOutput> {
@@ -517,35 +516,36 @@ Estimate: ${t.estimate}
 For EACH ticket, provide:
 1. technicalPlan: High-level approach (3-5 sentences)
 2. filesToChange: Specific files to create/modify
-3. dependencies: What must be done first
+3. dependencies: What must be done first (ticket IDs, or empty array)
+4. complexity: "low" | "medium" | "high" — "low" for ≤2-file changes with no new types; "high" for >6 files, schema changes, or cross-cutting refactors; "medium" otherwise
 
-Be specific. Generic plans are useless.
+Be specific. Generic plans are useless. Respond with ONLY a JSON array, one entry per input ticket, in input order.
 `;
 
-  const result = await callLLM(persona, prompt, { cwd: projectPath, agentId, runId });
+  type ArchitectEntry = {
+    technicalPlan?: string;
+    filesToChange?: string[];
+    dependencies?: string[];
+    complexity?: 'low' | 'medium' | 'high';
+  };
 
-  // Try to parse as JSON, fall back to structured parsing
-  try {
-    const parsed = JSON.parse(result);
-    return {
-      scopedTickets: tickets.map((t, i) => ({
-        ...t,
-        technicalPlan: parsed[i]?.technicalPlan || 'Plan pending',
-        filesToChange: parsed[i]?.filesToChange || [],
-        dependencies: parsed[i]?.dependencies || [],
-      })),
-    };
-  } catch {
-    // Fall back: split by ticket and extract fields heuristically
-    return {
-      scopedTickets: tickets.map(t => ({
-        ...t,
-        technicalPlan: result.substring(0, 500),
-        filesToChange: [],
-        dependencies: [],
-      })),
-    };
-  }
+  const parsed = await withJsonRetry<ArchitectEntry[]>(
+    (suffix) => callLLM(persona, `${prompt}${suffix ?? ''}`, { cwd: projectPath, agentId, runId }),
+    {
+      maxAttempts: 3,
+      validate: (v) => Array.isArray(v) && v.length === tickets.length,
+    },
+  );
+
+  return {
+    scopedTickets: tickets.map((t, i) => ({
+      ...t,
+      technicalPlan: parsed[i]?.technicalPlan || 'Plan pending',
+      filesToChange: parsed[i]?.filesToChange ?? [],
+      dependencies: parsed[i]?.dependencies ?? [],
+      complexity: parsed[i]?.complexity ?? 'medium',
+    })),
+  };
 }
 
 export async function implementCode(input: ImplementInput): Promise<ImplementOutput> {
@@ -636,14 +636,16 @@ Evaluate against the acceptance criteria. Respond with ONLY a JSON object (no pr
 { "approved": true|false, "comments": ["specific, actionable comment", ...] }
 `;
 
-  const result = stripThinking(await callLLM(persona, prompt, { cwd: worktreePath, agentId, runId }));
-
-  try {
-    const match = result.match(/\{[\s\S]*\}/);
-    return match ? JSON.parse(match[0]) : JSON.parse(result);
-  } catch {
-    return { approved: false, comments: ['Could not parse review output'] };
-  }
+  return await withJsonRetry<ReviewResult>(
+    async (suffix) => stripThinking(await callLLM(persona, `${prompt}${suffix ?? ''}`, { cwd: worktreePath, agentId, runId })),
+    {
+      maxAttempts: 3,
+      validate: (v): v is ReviewResult =>
+        typeof v === 'object' && v !== null
+        && typeof (v as any).approved === 'boolean'
+        && Array.isArray((v as any).comments),
+    },
+  );
 }
 
 interface TestCommand { cmd: string; args: string[]; label: string; }
