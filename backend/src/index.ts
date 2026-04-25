@@ -338,8 +338,23 @@ const httpServer = http.createServer(async (req, res) => {
     if (ptyRunning) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'running' }));
+      return;
+    }
+    // PTY not running — may have exited (clean or crashed) or never spawned.
+    const exitState = ptyManager.getExitState(agentId);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    if (exitState) {
+      res.end(JSON.stringify({
+        status: exitState.exitCode === 0 ? 'completed' : 'error',
+        exitCode: exitState.exitCode,
+        signal: exitState.signal,
+        outputTail: exitState.outputTail,
+        output: exitState.outputTail,
+        error: exitState.exitCode !== 0
+          ? `PTY exited with code ${exitState.exitCode}${exitState.signal ? ` (signal ${exitState.signal})` : ''}`
+          : undefined,
+      }));
     } else {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'completed', output: '' }));
     }
     return;
