@@ -1,5 +1,12 @@
 # Routing Atelier Agents Through opencode — Implementation Plan
 
+> **STATUS (2026-04-25): HALTED AT TASK 7.** Tasks 1–7 (the per-run-serve infrastructure: bun-test wiring, `Persona` type + tools matrix, bootstrap, registry, lifecycle, sessions, arbiter persona) shipped on branch `worktree-playful-finding-lemon`. Tasks 8–23 were stopped after a rebase onto `develop` revealed substantial parallel opencode work (per-call `runOpenCodeAgent`, `worker/src/llm/` layer, multi-specialist personas, best-of-N + judges, panel reviews, `withJsonRetry`, telemetry). Executing the remaining tasks as written would regress that work. Next step: re-design Tasks 8–23 as an **adapter layer** on top of the per-run-serve infrastructure, letting individual activities opt into persistent-session mode without tearing out the per-call shape that already exists. See the spec doc for the original full design.
+>
+> **Spec deviations discovered during Task 5** (encoded in committed code, not yet propagated to the spec doc):
+> - opencode HTTP API uses **HTTP Basic auth** (`Basic base64("opencode:<password>")`), not Bearer.
+> - `opencode serve` has **no `--cwd` flag** — set cwd via Node `spawn` options.
+> - `--port 0` always returns **4096** (no ephemeral port assignment); concurrent runs would collide on EADDRINUSE.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace direct MiniMax HTTP and the dormant `claude -p` PTY path with a per-run `opencode serve` plus per-persona session model, so every agent in the Terminal Grid actually runs inside an opencode session with scoped tool access.
