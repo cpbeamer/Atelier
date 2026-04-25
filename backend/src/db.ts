@@ -2,6 +2,7 @@
 import { Database } from 'bun:sqlite';
 import path from 'node:path';
 import fs from 'node:fs';
+import { CURATED_PROVIDERS, type ProviderKind } from './providers/registry.js';
 
 const DB_PATH = path.join(process.env.HOME || '', '.atelier', 'db', 'atelier.sqlite');
 
@@ -76,25 +77,44 @@ function migrate() {
     );
   `);
 
-  // Add selected_model column to existing DBs (idempotent — wrapped because
-  // ADD COLUMN is not guarded by IF NOT EXISTS in older SQLite versions).
-  try {
-    db.exec(`ALTER TABLE model_config ADD COLUMN selected_model TEXT`);
-  } catch {
-    // Column already exists — expected on subsequent boots.
+  // Idempotent ALTER TABLE additions. SQLite ADD COLUMN isn't guarded by
+  // IF NOT EXISTS in older versions, so wrap each in try/catch.
+  for (const ddl of [
+    `ALTER TABLE model_config ADD COLUMN selected_model TEXT`,
+    `ALTER TABLE model_config ADD COLUMN kind TEXT NOT NULL DEFAULT 'openai-compatible'`,
+    `ALTER TABLE model_config ADD COLUMN is_custom INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE model_config ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0`,
+  ]) {
+    try { db.exec(ddl); } catch { /* column already exists */ }
   }
 
-  // Seed MiniMax and OpenRouter if no providers exist
-  const count = getDb().prepare('SELECT COUNT(*) as c FROM model_config').get() as { c: number };
-  if (count.c === 0) {
-    getDb().prepare(`INSERT INTO model_config (id, name, base_url, enabled, models_json) VALUES (?,?,?,?,?)`)
-      .run('minimax', 'MiniMax', 'https://api.minimax.io/v1', 1, '["MiniMax-M2.7","MiniMax-M2.7-highspeed"]');
-    getDb().prepare(`INSERT INTO model_config (id, name, base_url, enabled, models_json) VALUES (?,?,?,?,?)`)
-      .run('openrouter', 'OpenRouter', 'https://openrouter.ai/api/v1', 0, '["anthropic/claude-3.5-sonnet","openai/gpt-4o"]');
-  } else {
-    // Migrate existing minimax row to M2.7 endpoint/models (idempotent).
-    getDb().prepare(`UPDATE model_config SET base_url = ?, models_json = ? WHERE id = 'minimax'`)
-      .run('https://api.minimax.io/v1', '["MiniMax-M2.7","MiniMax-M2.7-highspeed"]');
+  syncProvidersFromRegistry();
+}
+
+// Upsert curated providers from registry on every boot. INSERTs new rows
+// with defaultEnabled honored; UPDATEs name/base_url/kind/models on existing
+// rows but deliberately leaves enabled / selected_model / is_primary alone
+// so user state survives a restart. Custom (is_custom=1) rows are untouched.
+function syncProvidersFromRegistry() {
+  const stmt = getDb().prepare(`
+    INSERT INTO model_config (id, name, base_url, kind, enabled, models_json)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      base_url = excluded.base_url,
+      kind = excluded.kind,
+      models_json = excluded.models_json
+    WHERE model_config.is_custom = 0
+  `);
+  for (const p of CURATED_PROVIDERS) {
+    stmt.run(
+      p.id,
+      p.name,
+      p.baseUrl,
+      p.kind,
+      p.defaultEnabled ? 1 : 0,
+      JSON.stringify(p.defaultModels),
+    );
   }
 }
 
@@ -132,21 +152,35 @@ export const milestones = {
 };
 
 export const modelConfig = {
-  upsert: (id: string, name: string, baseUrl: string, enabled: number, modelsJson: string) =>
-    getDb().prepare(`
-      INSERT INTO model_config (id, name, base_url, enabled, models_json)
-      VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
-        name=excluded.name, base_url=excluded.base_url,
-        enabled=excluded.enabled, models_json=excluded.models_json
-    `).run(id, name, baseUrl, enabled, modelsJson),
   list: () => getDb().prepare('SELECT * FROM model_config ORDER BY name').all(),
+  findById: (id: string) =>
+    getDb().prepare('SELECT * FROM model_config WHERE id=?').get(id) as
+      | { id: string; name: string; base_url: string; enabled: number; models_json: string; selected_model: string | null; kind: string; is_custom: number; is_primary: number }
+      | undefined,
+  findPrimary: () =>
+    getDb().prepare('SELECT * FROM model_config WHERE is_primary=1 LIMIT 1').get() as
+      | { id: string; name: string; base_url: string; selected_model: string | null; kind: string; models_json: string }
+      | undefined,
   setEnabled: (id: string, enabled: number) =>
     getDb().prepare('UPDATE model_config SET enabled=? WHERE id=?').run(enabled, id),
   setModels: (id: string, modelsJson: string) =>
     getDb().prepare('UPDATE model_config SET models_json=? WHERE id=?').run(modelsJson, id),
   setSelectedModel: (id: string, selectedModel: string | null) =>
     getDb().prepare('UPDATE model_config SET selected_model=? WHERE id=?').run(selectedModel, id),
+  setPrimary: (id: string) => {
+    const tx = getDb().transaction((targetId: string) => {
+      getDb().prepare('UPDATE model_config SET is_primary=0').run();
+      getDb().prepare('UPDATE model_config SET is_primary=1 WHERE id=?').run(targetId);
+    });
+    tx(id);
+  },
+  addCustom: (id: string, name: string, baseUrl: string, kind: ProviderKind, modelsJson: string) =>
+    getDb().prepare(`
+      INSERT INTO model_config (id, name, base_url, kind, enabled, models_json, is_custom)
+      VALUES (?, ?, ?, ?, 0, ?, 1)
+    `).run(id, name, baseUrl, kind, modelsJson),
+  removeCustom: (id: string) =>
+    getDb().prepare('DELETE FROM model_config WHERE id=? AND is_custom=1').run(id),
 };
 
 export const projectContext = {

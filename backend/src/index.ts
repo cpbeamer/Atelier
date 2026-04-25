@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { ptyManager } from './pty-manager.js';
 import { agentStreamManager, type AgentEvent } from './agent-stream.js';
 import { startSidecar, stopSidecar } from './sidecar-lifecycle.js';
-import { milestones } from './db.js';
+import { milestones, modelConfig } from './db.js';
 import { loadProjectContext, saveProjectContext } from './project-context.js';
 import './ipc-handlers.js';
 
@@ -251,6 +251,35 @@ const httpServer = http.createServer(async (req, res) => {
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(response));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: String(err) }));
+    }
+    return;
+  }
+
+  // GET /api/settings/primaryProvider - resolve the primary provider for the worker
+  if (req.method === 'GET' && url.pathname === '/api/settings/primaryProvider') {
+    try {
+      const row = modelConfig.findPrimary();
+      if (!row) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'No primary provider set' }));
+        return;
+      }
+      let models: string[] = [];
+      try { models = JSON.parse(row.models_json || '[]'); } catch { models = []; }
+      const selectedModel = row.selected_model && models.includes(row.selected_model)
+        ? row.selected_model
+        : (models[0] ?? null);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        id: row.id,
+        name: row.name,
+        baseUrl: row.base_url,
+        kind: row.kind,
+        selectedModel,
+      }));
     } catch (err) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: String(err) }));
