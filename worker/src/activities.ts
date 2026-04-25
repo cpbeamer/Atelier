@@ -154,6 +154,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { callLLM, getPrimaryModelName } from './llm/callLLM.js';
 import { withJsonRetry } from './llm/withJsonRetry.js';
+import { NonRetryableAgentError } from './errors.js';
 
 async function readFile(filePath: string): Promise<string> {
   return fs.promises.readFile(filePath, 'utf-8');
@@ -602,7 +603,8 @@ Rules:
   const result = await callLLM(persona, prompt, { cwd: worktreePath, agentId, runId });
   const edits = parseFileEdits(result);
   if (edits.length === 0) {
-    throw new Error(
+    // No amount of retry will fix a prompt/protocol mismatch — fail fast.
+    throw new NonRetryableAgentError(
       `Developer produced no file edits for ticket ${ticket.id}. Output preview: ${result.slice(0, 500)}`,
     );
   }
