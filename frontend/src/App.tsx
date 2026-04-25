@@ -23,6 +23,7 @@ const AUTOPILOT_PANES: TerminalPaneConfig[] = [
 function App() {
   const [activeProject, setActiveProject] = useState<Project | null>(null);
   const [activeRun, setActiveRun] = useState<string | null>(null);
+  const [activeWorkflowType, setActiveWorkflowType] = useState<string | null>(null);
   const [panes, setPanes] = useState<TerminalPaneConfig[]>([]);
   const [showInbox, setShowInbox] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -39,6 +40,7 @@ function App() {
 
     setWorkflowActive(true);
     setActiveRun(runId);
+    setActiveWorkflowType('autopilot');
     setPanes(AUTOPILOT_PANES);
   }, [activeProject]);
 
@@ -49,6 +51,7 @@ function App() {
     });
     setWorkflowActive(true);
     setActiveRun(runId);
+    setActiveWorkflowType(workflow.name);
     setPanes([
       { id: 'agent-1', agentName: 'PM Specialist', agentType: 'terminal', status: 'running' },
       { id: 'agent-2', agentName: 'PM Validator', agentType: 'terminal', status: 'running' },
@@ -106,7 +109,7 @@ function App() {
 
           {workflowActive && (
             <div className="w-64 border-l border-border">
-              <WorkflowGraph runId={activeRun || undefined} />
+              <WorkflowGraph runId={activeRun || undefined} workflowType={activeWorkflowType || undefined} />
             </div>
           )}
         </div>
