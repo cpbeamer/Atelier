@@ -1,8 +1,6 @@
 // frontend/src/components/RawTerminalView.tsx
 //
-// xterm.js terminal wired to the backend `pty-subscribe` / `pty-output` /
-// `pty-write` / `pty-resize` stream. Used as the raw fallback view for
-// agents whose output isn't structured JSON.
+// xterm.js terminal wired to the backend pty stream.
 
 import { useEffect, useRef } from 'react';
 import { Terminal } from 'xterm';
@@ -28,29 +26,29 @@ export function RawTerminalView({ ptyId }: Props) {
       fontFamily: '"JetBrains Mono", "Fira Code", monospace',
       fontSize: 12,
       letterSpacing: 0,
-      lineHeight: 1.35,
+      lineHeight: 1.5,
       theme: {
-        background: '#0a0b0d',
-        foreground: '#d4d2cc',
-        cursor: '#d4ff00',
-        cursorAccent: '#0a0b0d',
-        selectionBackground: '#1e2024',
-        black: '#0a0b0d',
-        red: '#ff6b5a',
-        green: '#d4ff00',
-        yellow: '#ffb84a',
-        blue: '#63d4ff',
-        magenta: '#c89cff',
-        cyan: '#63d4ff',
-        white: '#d4d2cc',
-        brightBlack: '#4a4d52',
-        brightRed: '#ff9b8f',
-        brightGreen: '#e8ff6b',
-        brightYellow: '#ffd28a',
-        brightBlue: '#a8e6ff',
-        brightMagenta: '#e0c8ff',
-        brightCyan: '#a8e6ff',
-        brightWhite: '#e8e6e0',
+        background: '#141416',
+        foreground: '#ededea',
+        cursor: '#ff6b35',
+        cursorAccent: '#141416',
+        selectionBackground: '#27272a',
+        black: '#141416',
+        red: '#e87b6f',
+        green: '#a8c8a0',
+        yellow: '#e6b069',
+        blue: '#7d92a3',
+        magenta: '#b59ac2',
+        cyan: '#8aa9a8',
+        white: '#ededea',
+        brightBlack: '#52524f',
+        brightRed: '#f0928a',
+        brightGreen: '#bfd6b8',
+        brightYellow: '#f0c896',
+        brightBlue: '#9aacba',
+        brightMagenta: '#c9b3d4',
+        brightCyan: '#a3bfbe',
+        brightWhite: '#ffffff',
       },
     });
 
@@ -66,7 +64,7 @@ export function RawTerminalView({ ptyId }: Props) {
       if (payload.id === ptyId) term.write(payload.data);
     });
     const unsubExit = subscribe('pty-exit', (payload: { id: string; exitCode: number }) => {
-      if (payload.id === ptyId) term.writeln(`\r\n\x1b[38;2;138;141;146m— exit · code ${payload.exitCode}\x1b[0m`);
+      if (payload.id === ptyId) term.writeln(`\r\n\x1b[38;2;113;113;111m— exit · code ${payload.exitCode}\x1b[0m`);
     });
     send('pty-subscribe', { id: ptyId });
 
@@ -87,7 +85,7 @@ export function RawTerminalView({ ptyId }: Props) {
   }, [ptyId]);
 
   return (
-    <div className="h-full w-full bg-[#0a0b0d] px-2 py-2">
+    <div className="h-full w-full px-3 py-3">
       <div ref={hostRef} className="h-full w-full" />
     </div>
   );

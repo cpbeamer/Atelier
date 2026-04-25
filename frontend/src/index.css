@@ -1,83 +1,78 @@
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Martian+Mono:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap');
 @import "tailwindcss";
 
 @theme {
-  /* Control-room palette: warm ink base, chartreuse/amber/cyan accents. */
-  --color-ink: #0a0b0d;
-  --color-ink-panel: #101114;
-  --color-ink-inner: #0d0f12;
-  --color-ink-deep: #060708;
-  --color-hair: #1e2024;
-  --color-hair-bright: #2a2d32;
+  /* Studio Quiet — warm paper-on-ink, single amber accent. */
+  --color-ink: #0c0c0d;
+  --color-surface: #141416;
+  --color-surface-2: #18181b;
+  --color-hair: #1f1f22;
+  --color-hair-2: #27272a;
 
-  --color-text: #e8e6e0;
-  --color-text-dim: #d4d2cc;
-  --color-text-muted: #8a8d92;
-  --color-text-faint: #6b6b68;
-  --color-text-hint: #4a4d52;
+  --color-text: #ededea;
+  --color-text-dim: #a1a1a0;
+  --color-text-muted: #71716f;
+  --color-text-faint: #52524f;
 
-  --color-live: #d4ff00;
-  --color-tool: #ffb84a;
-  --color-system: #63d4ff;
-  --color-signal: #c89cff;
-  --color-error: #ff6b5a;
+  --color-accent: #ff6b35;
+  --color-accent-soft: rgba(255, 107, 53, 0.12);
+  --color-success: #a8c8a0;
+  --color-error: #e87b6f;
 
-  /* Shadcn-compat tokens remapped to the new palette so legacy components inherit it. */
+  /* Shadcn-compat tokens remapped. */
   --color-background: var(--color-ink);
   --color-foreground: var(--color-text);
   --color-border: var(--color-hair);
   --color-input: var(--color-hair);
-  --color-ring: var(--color-live);
-  --color-card: var(--color-ink-panel);
+  --color-ring: var(--color-accent);
+  --color-card: var(--color-surface);
   --color-card-foreground: var(--color-text);
-  --color-popover: var(--color-ink-panel);
+  --color-popover: var(--color-surface);
   --color-popover-foreground: var(--color-text);
-  --color-primary: var(--color-live);
+  --color-primary: var(--color-accent);
   --color-primary-foreground: var(--color-ink);
-  --color-secondary: var(--color-ink-panel);
+  --color-secondary: var(--color-surface);
   --color-secondary-foreground: var(--color-text-dim);
-  --color-muted: var(--color-ink-panel);
+  --color-muted: var(--color-surface);
   --color-muted-foreground: var(--color-text-muted);
-  --color-accent: var(--color-ink-panel);
   --color-accent-foreground: var(--color-text);
   --color-destructive: var(--color-error);
   --color-destructive-foreground: var(--color-ink);
 
-  --font-display: 'Martian Mono', 'JetBrains Mono', ui-monospace, monospace;
-  --font-body: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
-  --font-sans: 'JetBrains Mono', ui-monospace, monospace;
+  --font-display: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-body: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-serif: 'Instrument Serif', ui-serif, Georgia, serif;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  --font-sans: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif;
 }
 
 @layer base {
   :root {
-    --background: #0a0b0d;
-    --foreground: #e8e6e0;
-    --card: #101114;
-    --card-foreground: #e8e6e0;
-    --popover: #101114;
-    --popover-foreground: #e8e6e0;
-    --primary: #d4ff00;
-    --primary-foreground: #0a0b0d;
-    --secondary: #101114;
-    --secondary-foreground: #d4d2cc;
-    --muted: #101114;
-    --muted-foreground: #8a8d92;
-    --accent: #101114;
-    --accent-foreground: #e8e6e0;
-    --destructive: #ff6b5a;
-    --destructive-foreground: #0a0b0d;
-    --border: #1e2024;
-    --input: #1e2024;
-    --ring: #d4ff00;
-    --radius: 0;
+    --background: #0c0c0d;
+    --foreground: #ededea;
+    --card: #141416;
+    --card-foreground: #ededea;
+    --popover: #141416;
+    --popover-foreground: #ededea;
+    --primary: #ff6b35;
+    --primary-foreground: #0c0c0d;
+    --secondary: #141416;
+    --secondary-foreground: #a1a1a0;
+    --muted: #141416;
+    --muted-foreground: #71716f;
+    --accent: #141416;
+    --accent-foreground: #ededea;
+    --destructive: #e87b6f;
+    --destructive-foreground: #0c0c0d;
+    --border: #1f1f22;
+    --input: #1f1f22;
+    --ring: #ff6b35;
+    --radius: 6px;
   }
 
   * { @apply border-border; }
 
-  html, body, #root {
-    height: 100%;
-  }
+  html, body, #root { height: 100%; }
 
   body {
     background: var(--color-ink);
@@ -88,50 +83,25 @@
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
     overflow: hidden;
+    letter-spacing: -0.005em;
   }
-
-  /* Ambient grain: a single radial + repeating noise on the root so every
-     surface has atmospheric depth instead of flat fills. */
-  body::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    background:
-      radial-gradient(1200px 600px at 20% -10%, rgba(212, 255, 0, 0.035), transparent 60%),
-      radial-gradient(900px 500px at 110% 110%, rgba(99, 212, 255, 0.025), transparent 60%);
-    z-index: 0;
-  }
-  #root { position: relative; z-index: 1; }
 }
 
 @layer utilities {
-  .font-display { font-family: var(--font-display); }
-  .font-body { font-family: var(--font-body); }
+  .font-serif { font-family: var(--font-serif); }
+  .font-mono { font-family: var(--font-mono); }
 
-  /* Scanlines: subtle horizontal stripes that read as "live telemetry". */
-  .scanlines {
-    background-image: repeating-linear-gradient(
-      to bottom,
-      rgba(255, 255, 255, 0.02) 0px,
-      rgba(255, 255, 255, 0.02) 1px,
-      transparent 1px,
-      transparent 3px
-    );
-  }
-
-  .hair { border-color: var(--color-hair); }
-
-  /* Live pulse on active elements. */
+  /* Quiet active dot — gentle breath, not a strobe. */
   .live-dot {
-    box-shadow: 0 0 8px rgba(212, 255, 0, 0.9), 0 0 16px rgba(212, 255, 0, 0.4);
-    animation: livePulse 1.6s ease-in-out infinite;
+    box-shadow: 0 0 0 3px rgba(255, 107, 53, 0.16);
+    animation: livePulse 2.6s ease-in-out infinite;
   }
   @keyframes livePulse {
-    0%, 100% { opacity: 1; box-shadow: 0 0 8px rgba(212, 255, 0, 0.9), 0 0 16px rgba(212, 255, 0, 0.4); }
-    50% { opacity: 0.6; box-shadow: 0 0 4px rgba(212, 255, 0, 0.5), 0 0 8px rgba(212, 255, 0, 0.2); }
+    0%, 100% { box-shadow: 0 0 0 3px rgba(255, 107, 53, 0.16); }
+    50%      { box-shadow: 0 0 0 4px rgba(255, 107, 53, 0.06); }
   }
 
+  /* Cursor caret for streaming transcripts. */
   .live-cursor {
     animation: liveBlink 1.1s steps(2, start) infinite;
   }
@@ -139,34 +109,23 @@
     to { opacity: 0; }
   }
 
-  /* Rack chrome: a pane bezel with corner tick marks. */
-  .rack {
-    position: relative;
-    background: var(--color-ink-panel);
-    border: 1px solid var(--color-hair);
+  /* Soft entrance for new content blocks. */
+  .fade-in {
+    animation: fadeIn 240ms ease-out;
   }
-  .rack::before,
-  .rack::after {
-    content: '';
-    position: absolute;
-    width: 10px;
-    height: 10px;
-    border: 1px solid var(--color-hair-bright);
-  }
-  .rack::before { top: -1px; left: -1px; border-right: none; border-bottom: none; }
-  .rack::after { bottom: -1px; right: -1px; border-left: none; border-top: none; }
-
-  .rack-live {
-    box-shadow:
-      0 0 0 1px rgba(212, 255, 0, 0.15),
-      0 0 24px -8px rgba(212, 255, 0, 0.35),
-      0 1px 0 rgba(212, 255, 0, 0.08) inset;
-    border-color: rgba(212, 255, 0, 0.35);
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(2px); }
+    to   { opacity: 1; transform: none; }
   }
 
-  /* Custom scrollbar — thin, integrated with the ink palette. */
-  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  /* Thin, restrained scrollbar — only visible on hover. */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: #1e2024; }
-  ::-webkit-scrollbar-thumb:hover { background: #2a2d32; }
+  ::-webkit-scrollbar-thumb { background: transparent; border-radius: 8px; }
+  *:hover > ::-webkit-scrollbar-thumb,
+  *:hover::-webkit-scrollbar-thumb { background: #27272a; }
+  ::-webkit-scrollbar-thumb:hover { background: #3a3a3d; }
+
+  /* Selection — warm amber wash. */
+  ::selection { background: rgba(255, 107, 53, 0.25); color: #ededea; }
 }

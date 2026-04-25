@@ -1,6 +1,6 @@
 // frontend/src/components/Sidebar.tsx
 import { useState, useEffect } from 'react';
-import { FolderClosed, Play, Settings, Plus, Zap } from 'lucide-react';
+import { FolderClosed, Play, Settings, Plus, Sparkles } from 'lucide-react';
 import { invoke } from '../lib/ipc';
 import type { Project } from '../lib/db';
 
@@ -33,19 +33,19 @@ export function Sidebar({ onProjectSelect, onWorkflowSelect, onSettingsClick, on
   async function handleAddProject() {
     setAddError(null);
     if (!window.electronAPI) {
-      setAddError('Adding a project requires the Electron app — the browser cannot resolve absolute folder paths.');
+      setAddError('Adding a project requires the desktop app — the browser cannot resolve absolute folder paths.');
       return;
     }
     let folderPath: string | null;
     try {
       folderPath = await window.electronAPI.openFolder();
     } catch (e) {
-      setAddError(e instanceof Error ? `Could not open folder picker: ${e.message}` : 'Could not open folder picker.');
+      setAddError(e instanceof Error ? `Couldn't open folder picker: ${e.message}` : 'Couldn\'t open folder picker.');
       return;
     }
     if (!folderPath) return;
     try {
-      const projectName = folderPath.split('/').pop() || 'New Project';
+      const projectName = folderPath.split('/').pop() || 'New project';
       const id = `proj-${Date.now()}`;
       const now = Date.now();
       await invoke('db.addProject', { id, name: projectName, path: folderPath });
@@ -59,7 +59,7 @@ export function Sidebar({ onProjectSelect, onWorkflowSelect, onSettingsClick, on
       }]);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setAddError(msg.includes('UNIQUE') ? 'This project has already been added.' : `Failed to add project: ${msg}`);
+      setAddError(msg.includes('UNIQUE') ? 'This project is already in your library.' : `Couldn't add project: ${msg}`);
     }
   }
 
@@ -73,42 +73,40 @@ export function Sidebar({ onProjectSelect, onWorkflowSelect, onSettingsClick, on
   }
 
   return (
-    <div className="w-60 shrink-0 bg-[#0a0b0d] border-r border-[#1e2024] flex flex-col h-full relative">
+    <aside className="w-60 shrink-0 border-r border-[var(--color-hair)] flex flex-col h-full">
       {/* Wordmark */}
-      <div className="px-4 pt-5 pb-4 border-b border-[#1e2024] relative">
+      <div className="px-5 pt-6 pb-5">
         <div className="flex items-baseline gap-2">
-          <span className="font-display font-bold text-[18px] tracking-[0.25em] uppercase text-[#e8e6e0]">
+          <span className="font-serif italic text-[24px] leading-none text-[var(--color-text)]">
             Atelier
           </span>
-          <span className="w-1.5 h-1.5 rounded-full bg-[#d4ff00] live-dot shrink-0 translate-y-[-2px]" />
         </div>
-        <div className="mt-1 font-display text-[9px] uppercase tracking-[0.4em] text-[#4a4d52]">
-          agent · control · room
+        <div className="mt-1.5 text-[12px] text-[var(--color-text-muted)] leading-snug">
+          Studio for agents
         </div>
       </div>
 
-      {/* Projects */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto px-2 pb-2">
         <Section
           title="Projects"
           action={
             <button
               onClick={handleAddProject}
-              className="p-1 hover:bg-[#101114] transition-colors text-[#6b6b68] hover:text-[#d4ff00]"
+              className="p-1 rounded text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-surface)] transition-colors"
               title="Add project"
             >
-              <Plus className="w-3 h-3" />
+              <Plus className="w-3.5 h-3.5" />
             </button>
           }
         >
           {addError && (
-            <div className="mx-2 mb-2 px-2 py-1.5 border border-[#ff6b5a]/40 bg-[#170e0e] text-[10px] text-[#ff9b8f] leading-snug">
+            <div className="mx-2 mb-2 px-2.5 py-2 rounded border border-[var(--color-error)]/30 bg-[var(--color-error)]/8 text-[11.5px] text-[var(--color-error)]/90 leading-snug">
               {addError}
             </div>
           )}
           {projects.length === 0 && (
-            <div className="px-3 py-2 text-[10px] font-display uppercase tracking-[0.25em] text-[#4a4d52]">
-              no projects yet
+            <div className="px-3 py-1.5 text-[12px] text-[var(--color-text-faint)]">
+              No projects yet
             </div>
           )}
           {projects.map((project) => {
@@ -117,13 +115,13 @@ export function Sidebar({ onProjectSelect, onWorkflowSelect, onSettingsClick, on
               <button
                 key={project.id}
                 onClick={() => handleProjectClick(project)}
-                className={`group w-full text-left px-3 py-1.5 flex items-center gap-2 text-[12px] border-l-2 transition-all ${
+                className={`group w-full text-left px-3 py-1.5 rounded-md flex items-center gap-2.5 text-[13px] transition-colors ${
                   active
-                    ? 'border-[#d4ff00] bg-[#101114] text-[#e8e6e0]'
-                    : 'border-transparent text-[#8a8d92] hover:border-[#1e2024] hover:bg-[#0d0f12] hover:text-[#d4d2cc]'
+                    ? 'bg-[var(--color-surface)] text-[var(--color-text)]'
+                    : 'text-[var(--color-text-dim)] hover:bg-[var(--color-surface)]/60 hover:text-[var(--color-text)]'
                 }`}
               >
-                <FolderClosed className="w-3.5 h-3.5 shrink-0" />
+                <FolderClosed className={`w-3.5 h-3.5 shrink-0 ${active ? 'text-[var(--color-accent)]' : 'text-[var(--color-text-muted)]'}`} />
                 <span className="truncate">{project.name}</span>
               </button>
             );
@@ -136,11 +134,11 @@ export function Sidebar({ onProjectSelect, onWorkflowSelect, onSettingsClick, on
               <button
                 key={wf.name}
                 onClick={() => onWorkflowSelect?.(wf)}
-                className="group w-full text-left px-3 py-1.5 flex items-center gap-2 text-[12px] text-[#8a8d92] hover:bg-[#0d0f12] hover:text-[#d4d2cc] transition-colors"
+                className="group w-full text-left px-3 py-1.5 rounded-md flex items-center gap-2.5 text-[13px] text-[var(--color-text-dim)] hover:bg-[var(--color-surface)]/60 hover:text-[var(--color-text)] transition-colors"
               >
-                <Play className="w-3 h-3 shrink-0 text-[#4a4d52] group-hover:text-[#d4ff00] transition-colors" />
+                <Play className="w-3 h-3 shrink-0 text-[var(--color-text-muted)] group-hover:text-[var(--color-accent)] transition-colors" />
                 <span className="truncate">{wf.name}</span>
-                <span className="ml-auto font-display text-[9px] uppercase tracking-[0.25em] text-[#4a4d52]">
+                <span className="ml-auto font-mono text-[10.5px] text-[var(--color-text-faint)]">
                   {wf.language === 'python' ? 'py' : 'ts'}
                 </span>
               </button>
@@ -149,41 +147,36 @@ export function Sidebar({ onProjectSelect, onWorkflowSelect, onSettingsClick, on
         )}
 
         {activeProject && (
-          <div className="px-2 pt-2 pb-3 border-t border-[#1e2024]">
+          <div className="mt-3 px-1">
             <button
               onClick={() => onAutopilotClick?.()}
-              className="w-full relative flex items-center justify-center gap-2 px-3 py-2 border border-[#d4ff00]/40 bg-gradient-to-b from-[#1a1d00]/60 to-[#0a0b0d] hover:border-[#d4ff00] transition-all group"
+              className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-md text-[13px] font-medium text-[var(--color-accent)] bg-[var(--color-accent-soft)] hover:bg-[rgba(255,107,53,0.18)] transition-colors"
             >
-              <Zap className="w-3.5 h-3.5 text-[#d4ff00]" />
-              <span className="font-display uppercase tracking-[0.3em] text-[11px] text-[#d4ff00]">
-                autopilot
-              </span>
-              <span className="absolute inset-x-0 top-0 h-[1px] bg-gradient-to-r from-transparent via-[#d4ff00]/60 to-transparent" />
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Run autopilot</span>
             </button>
           </div>
         )}
       </div>
 
-      {/* Settings */}
-      <div className="px-3 py-3 border-t border-[#1e2024] flex items-center justify-between">
+      <div className="px-3 py-3 border-t border-[var(--color-hair)]">
         <button
           onClick={() => onSettingsClick?.()}
-          className="flex items-center gap-2 font-display uppercase tracking-[0.25em] text-[10px] text-[#6b6b68] hover:text-[#d4d2cc] transition-colors"
+          className="flex items-center gap-2 text-[12.5px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors"
         >
-          <Settings className="w-3 h-3" />
-          settings
+          <Settings className="w-3.5 h-3.5" />
+          Settings
         </button>
-        <span className="font-display text-[9px] uppercase tracking-[0.3em] text-[#4a4d52]">v0.1</span>
       </div>
-    </div>
+    </aside>
   );
 }
 
 function Section({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="pt-3 pb-2">
-      <div className="flex items-center justify-between px-3 mb-1.5">
-        <span className="font-display uppercase tracking-[0.35em] text-[9px] text-[#4a4d52]">{title}</span>
+    <div className="pt-3 pb-1">
+      <div className="flex items-center justify-between px-3 mb-1">
+        <span className="text-[11px] font-medium text-[var(--color-text-faint)]">{title}</span>
         {action}
       </div>
       {children}

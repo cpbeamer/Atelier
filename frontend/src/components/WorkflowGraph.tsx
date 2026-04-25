@@ -13,13 +13,6 @@ interface Props {
   runId?: string;
 }
 
-const STATUS_COLOR: Record<WorkflowNode['status'], string> = {
-  running: '#d4ff00',
-  completed: '#63d4ff',
-  failed: '#ff6b5a',
-  pending: '#4a4d52',
-};
-
 export function WorkflowGraph({ runId }: Props) {
   const [nodes, setNodes] = useState<WorkflowNode[]>([]);
 
@@ -27,56 +20,52 @@ export function WorkflowGraph({ runId }: Props) {
     setNodes([
       { id: '1', name: 'PM Specialist', type: 'agent', status: 'completed', agentName: 'PM Specialist' },
       { id: '2', name: 'PM Validator', type: 'agent', status: 'completed', agentName: 'PM Validator' },
-      { id: '3', name: 'PM Proposal Review', type: 'milestone', status: 'running' },
+      { id: '3', name: 'Proposal review', type: 'milestone', status: 'running' },
       { id: '4', name: 'Architect', type: 'agent', status: 'pending', agentName: 'Architect' },
-      { id: '5', name: 'Code Writer', type: 'agent', status: 'pending', agentName: 'Code Writer' },
+      { id: '5', name: 'Code writer', type: 'agent', status: 'pending', agentName: 'Code writer' },
     ]);
   }, [runId]);
 
   return (
     <div className="h-full overflow-auto">
-      <div className="px-4 pt-4 pb-3 border-b border-[#1e2024]">
-        <div className="font-display uppercase tracking-[0.35em] text-[9px] text-[#4a4d52] mb-1">
-          pipeline
-        </div>
-        <div className="font-display uppercase tracking-[0.2em] text-[13px] text-[#e8e6e0]">
-          workflow
-        </div>
+      <div className="px-5 pt-5 pb-4">
+        <div className="text-[11px] text-[var(--color-text-faint)] mb-1">Pipeline</div>
+        <div className="text-[15px] font-medium text-[var(--color-text)]">Workflow</div>
       </div>
 
-      <div className="py-3">
+      <div className="pb-6 px-1">
         {nodes.map((node, idx) => {
-          const color = STATUS_COLOR[node.status];
           const isLast = idx === nodes.length - 1;
+          const dotColor =
+            node.status === 'running' ? 'var(--color-accent)'
+            : node.status === 'completed' ? 'var(--color-success)'
+            : node.status === 'failed' ? 'var(--color-error)'
+            : 'var(--color-text-faint)';
+
+          const lineColor =
+            node.status === 'completed' ? 'var(--color-success)'
+            : node.status === 'running' ? 'var(--color-accent)'
+            : 'var(--color-hair)';
+
           return (
-            <div key={node.id} className="relative px-4">
+            <div key={node.id} className="relative px-5">
               {!isLast && (
                 <div
-                  className="absolute left-[22px] top-7 w-[1px] h-full"
-                  style={{ background: node.status === 'completed' ? '#63d4ff33' : '#1e2024' }}
+                  className="absolute left-[27px] top-7 bottom-[-12px] w-px"
+                  style={{ background: lineColor, opacity: node.status === 'pending' ? 1 : 0.4 }}
                 />
               )}
-              <div className="relative flex items-start gap-3 py-2">
-                <div
-                  className="relative mt-[2px] w-2.5 h-2.5 rounded-full shrink-0"
-                  style={{
-                    background: color,
-                    boxShadow: node.status === 'running' ? `0 0 12px ${color}, 0 0 24px ${color}88` : 'none',
-                  }}
-                >
-                  {node.status === 'running' && (
-                    <span
-                      className="absolute inset-0 rounded-full animate-ping"
-                      style={{ background: color, opacity: 0.5 }}
-                    />
-                  )}
-                </div>
+              <div className="relative flex items-start gap-3 py-2.5">
+                <span
+                  className={`relative mt-[3px] w-2 h-2 rounded-full shrink-0 ${node.status === 'running' ? 'live-dot' : ''}`}
+                  style={{ background: dotColor }}
+                />
                 <div className="flex-1 min-w-0">
-                  <div className="font-display uppercase tracking-[0.12em] text-[11px] text-[#e8e6e0] truncate">
+                  <div className="text-[13px] text-[var(--color-text)] truncate leading-tight">
                     {node.name}
                   </div>
-                  <div className="font-display uppercase tracking-[0.3em] text-[9px] mt-0.5" style={{ color }}>
-                    {node.type} · {node.status}
+                  <div className="text-[11px] mt-0.5 text-[var(--color-text-muted)]">
+                    {labelFor(node.type, node.status)}
                   </div>
                 </div>
               </div>
@@ -86,4 +75,10 @@ export function WorkflowGraph({ runId }: Props) {
       </div>
     </div>
   );
+}
+
+function labelFor(type: WorkflowNode['type'], status: WorkflowNode['status']): string {
+  const t = type === 'agent' ? 'Agent' : type === 'milestone' ? 'Milestone' : 'Condition';
+  const s = status === 'pending' ? 'pending' : status === 'running' ? 'running' : status === 'completed' ? 'done' : 'failed';
+  return `${t} · ${s}`;
 }

@@ -1,13 +1,10 @@
 // frontend/src/components/AgentTranscript.tsx
 //
-// Renders a structured stream of agent events (as produced by `claude
-// --output-format stream-json`) as a control-room transcript: system init
-// banner, assistant text, tool_use cards with attached tool_results,
-// thinking blocks, and a final result summary.
+// Renders an agent's structured event stream as a calm transcript.
 
 import { useEffect, useRef, useState } from 'react';
 import { subscribe, send } from '../lib/ipc';
-import { ChevronRight, Wrench, CheckCircle2, XCircle, Cpu, Sparkles } from 'lucide-react';
+import { ChevronRight, Wrench, Check, X as XIcon } from 'lucide-react';
 
 type AgentEvent =
   | { kind: 'init'; sessionId: string; model: string; cwd: string; tools: string[]; ts: number }
@@ -33,9 +30,6 @@ export function AgentTranscript({ agentId, isActive }: Props) {
     const unsub = subscribe('agent-event', (payload: { id: string; event: AgentEvent }) => {
       if (payload.id !== agentId) return;
       setEvents((prev) => {
-        // Streaming deltas arrive coalesced at ~80ms intervals. Merge adjacent
-        // same-kind chunks so the transcript renders as one flowing block per
-        // run, not a stack of sparkle-prefixed slivers.
         const last = prev[prev.length - 1];
         const incoming = payload.event;
         if (
@@ -56,7 +50,6 @@ export function AgentTranscript({ agentId, isActive }: Props) {
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    // Auto-scroll only if user is near the bottom.
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
     if (nearBottom) el.scrollTop = el.scrollHeight;
   }, [events]);
@@ -65,18 +58,17 @@ export function AgentTranscript({ agentId, isActive }: Props) {
   for (const e of events) if (e.kind === 'tool_result') toolResultByUseId.set(e.toolId, e);
 
   return (
-    <div className="h-full relative bg-[#0a0b0d] overflow-hidden">
-      <div className="pointer-events-none absolute inset-0 scanlines opacity-[0.06] mix-blend-screen" />
+    <div className="h-full relative overflow-hidden">
       <div
         ref={scrollRef}
-        className="h-full overflow-y-auto px-5 py-4 font-body text-[13px] leading-[1.55] text-[#d4d2cc]"
+        className="h-full overflow-y-auto px-5 py-4 text-[13px] leading-[1.6] text-[var(--color-text-dim)]"
       >
         {events.length === 0 && (
-          <div className="flex items-center gap-2 text-[#4a4d52]">
-            <span className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-[#d4ff00] live-dot' : 'bg-[#3a3d42]'}`} />
-            <span className="text-[11px] uppercase tracking-[0.25em] font-display">
-              {isActive ? 'awaiting stream' : 'idle'}
-            </span>
+          <div className="flex items-center gap-2 text-[var(--color-text-faint)] text-[12px]">
+            <span className={`w-1.5 h-1.5 rounded-full ${isActive ? 'live-dot' : ''}`}
+              style={{ background: isActive ? 'var(--color-accent)' : 'var(--color-text-faint)' }}
+            />
+            <span>{isActive ? 'Awaiting stream' : 'Idle'}</span>
           </div>
         )}
 
@@ -87,7 +79,7 @@ export function AgentTranscript({ agentId, isActive }: Props) {
           if (e.kind === 'tool_use') {
             return <ToolCard key={idx} event={e} result={toolResultByUseId.get(e.toolId)} />;
           }
-          if (e.kind === 'tool_result') return null; // Rendered inside its tool_use card
+          if (e.kind === 'tool_result') return null;
           if (e.kind === 'result') return <ResultFooter key={idx} event={e} />;
           if (e.kind === 'stderr') return <StderrLine key={idx} event={e} />;
           if (e.kind === 'exit') return <ExitLine key={idx} event={e} />;
@@ -95,79 +87,65 @@ export function AgentTranscript({ agentId, isActive }: Props) {
         })}
 
         {isActive && events.some((e) => e.kind !== 'exit' && e.kind !== 'result') && (
-          <div className="mt-2 flex items-center gap-2 text-[#6b6b68]">
-            <span className="w-1 h-3 bg-[#d4ff00] live-cursor" />
-            <span className="text-[10px] uppercase tracking-[0.3em] font-display text-[#4a4d52]">live</span>
-          </div>
+          <div className="mt-2 inline-block w-1.5 h-3.5 align-middle live-cursor" style={{ background: 'var(--color-accent)' }} />
         )}
       </div>
     </div>
   );
 }
 
-function timecode(ts: number) {
-  const d = new Date(ts);
-  const hh = d.getHours().toString().padStart(2, '0');
-  const mm = d.getMinutes().toString().padStart(2, '0');
-  const ss = d.getSeconds().toString().padStart(2, '0');
-  return `${hh}:${mm}:${ss}`;
-}
-
 function InitBanner({ event }: { event: Extract<AgentEvent, { kind: 'init' }> }) {
   return (
-    <div className="mb-4 border border-[#1e2024] bg-[#101114] px-3 py-2 text-[11px]">
-      <div className="flex items-center gap-2 text-[#63d4ff]">
-        <Cpu className="w-3 h-3" />
-        <span className="font-display uppercase tracking-[0.25em]">session open</span>
-        <span className="ml-auto text-[#4a4d52]">{timecode(event.ts)}</span>
-      </div>
-      <div className="mt-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[#8a8d92]">
-        <span className="text-[#4a4d52]">model</span>
-        <span className="text-[#d4d2cc] break-all">{event.model || '—'}</span>
-        <span className="text-[#4a4d52]">cwd</span>
-        <span className="truncate text-[#d4d2cc]">{event.cwd || '—'}</span>
-        <span className="text-[#4a4d52]">tools</span>
-        <span className="flex flex-wrap gap-1">
-          {event.tools.slice(0, 12).map((t) => (
-            <span key={t} className="px-1.5 py-[1px] border border-[#1e2024] text-[10px] text-[#8a8d92] font-display tracking-wider">
-              {t}
+    <div className="mb-4 fade-in text-[11.5px] text-[var(--color-text-muted)]">
+      <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
+        <span className="text-[var(--color-text-faint)]">Model</span>
+        <span className="text-[var(--color-text-dim)] font-mono break-all">{event.model || '—'}</span>
+        <span className="text-[var(--color-text-faint)]">Path</span>
+        <span className="text-[var(--color-text-dim)] font-mono truncate">{event.cwd || '—'}</span>
+        {event.tools.length > 0 && (
+          <>
+            <span className="text-[var(--color-text-faint)]">Tools</span>
+            <span className="flex flex-wrap gap-1">
+              {event.tools.slice(0, 8).map((t) => (
+                <span key={t} className="px-1.5 py-0 rounded text-[10.5px] font-mono text-[var(--color-text-muted)] bg-[var(--color-surface-2)]">
+                  {t}
+                </span>
+              ))}
+              {event.tools.length > 8 && (
+                <span className="text-[10.5px] text-[var(--color-text-faint)] self-center">+{event.tools.length - 8}</span>
+              )}
             </span>
-          ))}
-          {event.tools.length > 12 && (
-            <span className="text-[10px] text-[#4a4d52]">+{event.tools.length - 12}</span>
-          )}
-        </span>
+          </>
+        )}
       </div>
+      <div className="mt-3 h-px bg-[var(--color-hair)]" />
     </div>
   );
 }
 
 function TextBlock({ event }: { event: Extract<AgentEvent, { kind: 'text' }> }) {
   return (
-    <div className="mb-3 flex gap-3">
-      <div className="shrink-0 pt-[3px]">
-        <Sparkles className="w-3 h-3 text-[#d4ff00]" />
-      </div>
-      <div className="flex-1 whitespace-pre-wrap text-[#e8e6e0]">{event.text}</div>
+    <div className="mb-3 fade-in whitespace-pre-wrap text-[var(--color-text)]">
+      {event.text}
     </div>
   );
 }
 
 function ThinkingBlock({ event }: { event: Extract<AgentEvent, { kind: 'thinking' }> }) {
   const [open, setOpen] = useState(false);
-  const preview = event.text.slice(0, 140).replace(/\s+/g, ' ');
+  const preview = event.text.slice(0, 120).replace(/\s+/g, ' ');
   return (
-    <div className="mb-3">
+    <div className="mb-3 fade-in">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex items-start gap-2 w-full text-left hover:text-[#8a8d92] transition-colors text-[#5a5d62]"
+        className="flex items-start gap-2 w-full text-left text-[var(--color-text-muted)] hover:text-[var(--color-text-dim)] transition-colors"
       >
-        <ChevronRight className={`w-3 h-3 mt-[3px] shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} />
-        <span className="text-[10px] uppercase tracking-[0.3em] font-display text-[#4a4d52] shrink-0 pt-[1px]">thinking</span>
-        {!open && <span className="italic text-[#5a5d62] truncate">{preview}…</span>}
+        <ChevronRight className={`w-3.5 h-3.5 mt-[2px] shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} />
+        <span className="text-[11.5px] text-[var(--color-text-faint)] shrink-0 pt-[1px]">Thinking</span>
+        {!open && <span className="italic text-[var(--color-text-faint)] truncate text-[12.5px]">{preview}…</span>}
       </button>
       {open && (
-        <div className="ml-5 mt-1 pl-3 border-l border-[#1e2024] whitespace-pre-wrap italic text-[#7a7d82] text-[12px]">
+        <div className="ml-6 mt-1.5 pl-3 border-l border-[var(--color-hair)] whitespace-pre-wrap italic text-[var(--color-text-muted)] text-[12.5px]">
           {event.text}
         </div>
       )}
@@ -185,36 +163,45 @@ function ToolCard({
   const [expanded, setExpanded] = useState(false);
   const inputPreview = summarizeToolInput(event.input);
   const status = !result ? 'running' : result.isError ? 'error' : 'ok';
-  const statusColor =
-    status === 'running' ? '#ffb84a' : status === 'error' ? '#ff6b5a' : '#d4ff00';
 
   return (
-    <div className="mb-3 border border-[#1e2024] bg-[#0d0f12]">
-      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[#1e2024] bg-[#101114]">
-        <Wrench className="w-3 h-3 text-[#ffb84a]" />
-        <span className="font-display uppercase tracking-[0.25em] text-[10px] text-[#8a8d92]">tool</span>
-        <span className="font-display text-[12px] text-[#e8e6e0]">{event.name}</span>
-        <span className="ml-auto flex items-center gap-1.5">
-          {status === 'running' && <span className="w-1.5 h-1.5 rounded-full bg-[#ffb84a] animate-pulse" />}
-          {status === 'ok' && <CheckCircle2 className="w-3 h-3" style={{ color: statusColor }} />}
-          {status === 'error' && <XCircle className="w-3 h-3" style={{ color: statusColor }} />}
-          <span className="font-display uppercase tracking-[0.25em] text-[10px]" style={{ color: statusColor }}>
-            {status}
-          </span>
+    <div className="mb-3 fade-in rounded-md border border-[var(--color-hair)] bg-[var(--color-surface-2)] overflow-hidden">
+      <div className="flex items-center gap-2 px-3 py-2">
+        <Wrench className="w-3.5 h-3.5 text-[var(--color-text-muted)]" />
+        <span className="font-mono text-[12px] text-[var(--color-text)]">{event.name}</span>
+        <span className="ml-auto flex items-center gap-1.5 text-[11px]">
+          {status === 'running' && (
+            <>
+              <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-accent)] live-dot" />
+              <span className="text-[var(--color-accent)]">Running</span>
+            </>
+          )}
+          {status === 'ok' && (
+            <>
+              <Check className="w-3 h-3 text-[var(--color-success)]" />
+              <span className="text-[var(--color-text-muted)]">Done</span>
+            </>
+          )}
+          {status === 'error' && (
+            <>
+              <XIcon className="w-3 h-3 text-[var(--color-error)]" />
+              <span className="text-[var(--color-error)]">Failed</span>
+            </>
+          )}
         </span>
       </div>
-      <div className="px-3 py-2 text-[12px] text-[#8a8d92]">
-        <div className="font-body text-[#d4d2cc] break-all">{inputPreview}</div>
+      <div className="px-3 pb-2.5 text-[12px] text-[var(--color-text-muted)]">
+        <div className="font-mono text-[var(--color-text-dim)] break-all text-[11.5px]">{inputPreview}</div>
         {result && (
           <>
             <button
               onClick={() => setExpanded((v) => !v)}
-              className="mt-2 text-[10px] uppercase tracking-[0.25em] font-display text-[#4a4d52] hover:text-[#8a8d92]"
+              className="mt-2 text-[11px] text-[var(--color-text-faint)] hover:text-[var(--color-text-muted)] transition-colors"
             >
-              {expanded ? '— collapse output' : '+ show output'}
+              {expanded ? 'Hide output' : 'Show output'}
             </button>
             {expanded && (
-              <pre className="mt-2 px-2 py-1.5 bg-[#060708] border border-[#1e2024] text-[11px] text-[#a8a69f] whitespace-pre-wrap break-words max-h-80 overflow-y-auto">
+              <pre className="mt-2 px-2.5 py-2 rounded bg-[var(--color-ink)] border border-[var(--color-hair)] text-[11px] font-mono text-[var(--color-text-dim)] whitespace-pre-wrap break-words max-h-80 overflow-y-auto">
                 {result.content.length > 5000 ? result.content.slice(0, 5000) + '\n… truncated' : result.content}
               </pre>
             )}
@@ -228,7 +215,6 @@ function ToolCard({
 function summarizeToolInput(input: unknown): string {
   if (!input || typeof input !== 'object') return String(input ?? '');
   const obj = input as Record<string, unknown>;
-  // Heuristics: surface the most informative field first.
   for (const key of ['file_path', 'path', 'url', 'command', 'pattern', 'query', 'description']) {
     if (typeof obj[key] === 'string') return `${key}: ${obj[key] as string}`;
   }
@@ -240,20 +226,19 @@ function summarizeToolInput(input: unknown): string {
 }
 
 function ResultFooter({ event }: { event: Extract<AgentEvent, { kind: 'result' }> }) {
-  const color = event.success ? '#d4ff00' : '#ff6b5a';
+  const color = event.success ? 'var(--color-success)' : 'var(--color-error)';
   return (
-    <div className="mt-5 border-t border-[#1e2024] pt-3 flex items-center gap-4 text-[11px] font-display uppercase tracking-[0.25em]">
-      <span style={{ color }}>{event.success ? 'complete' : 'failed'}</span>
-      <span className="text-[#4a4d52]">
-        <span className="text-[#8a8d92]">{event.turns}</span> turns
-      </span>
-      <span className="text-[#4a4d52]">
-        <span className="text-[#8a8d92]">{(event.durationMs / 1000).toFixed(1)}s</span>
-      </span>
+    <div className="mt-5 pt-3 border-t border-[var(--color-hair)] flex items-center gap-4 text-[11.5px] text-[var(--color-text-muted)]">
+      <span style={{ color }}>{event.success ? 'Complete' : 'Failed'}</span>
+      <span className="text-[var(--color-text-faint)]">·</span>
+      <span>{event.turns} turn{event.turns === 1 ? '' : 's'}</span>
+      <span className="text-[var(--color-text-faint)]">·</span>
+      <span className="font-mono">{(event.durationMs / 1000).toFixed(1)}s</span>
       {typeof event.costUsd === 'number' && (
-        <span className="text-[#4a4d52]">
-          <span className="text-[#8a8d92]">${event.costUsd.toFixed(4)}</span>
-        </span>
+        <>
+          <span className="text-[var(--color-text-faint)]">·</span>
+          <span className="font-mono">${event.costUsd.toFixed(4)}</span>
+        </>
       )}
     </div>
   );
@@ -261,18 +246,18 @@ function ResultFooter({ event }: { event: Extract<AgentEvent, { kind: 'result' }
 
 function StderrLine({ event }: { event: Extract<AgentEvent, { kind: 'stderr' }> }) {
   return (
-    <div className="mb-1 px-2 py-1 border-l-2 border-[#ff6b5a] bg-[#170e0e] text-[11px] text-[#ff9b8f] whitespace-pre-wrap">
+    <div className="mb-1 px-2.5 py-1.5 rounded border-l-2 border-[var(--color-error)] bg-[var(--color-error)]/8 text-[11.5px] text-[var(--color-error)]/90 whitespace-pre-wrap font-mono">
       {event.text}
     </div>
   );
 }
 
 function ExitLine({ event }: { event: Extract<AgentEvent, { kind: 'exit' }> }) {
-  const color = event.code === 0 ? '#8a8d92' : '#ff6b5a';
+  const color = event.code === 0 ? 'var(--color-text-muted)' : 'var(--color-error)';
   return (
-    <div className="mt-2 flex items-center gap-2 text-[10px] font-display uppercase tracking-[0.3em]" style={{ color }}>
-      <span className="w-4 border-t border-current" />
-      exit · code {event.code}
+    <div className="mt-2 flex items-center gap-2 text-[11px]" style={{ color }}>
+      <span className="w-4 border-t border-current opacity-50" />
+      Exit · code {event.code}
     </div>
   );
 }

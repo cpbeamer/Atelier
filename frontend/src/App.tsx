@@ -1,5 +1,5 @@
 // frontend/src/App.tsx
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { TerminalGrid, TerminalPaneConfig } from './components/TerminalGrid';
 import { MilestoneInbox } from './components/MilestoneInbox';
@@ -7,16 +7,16 @@ import { WorkflowGraph } from './components/WorkflowGraph';
 import { SettingsModal } from './components/SettingsModal';
 import type { Project } from './lib/db';
 import { invoke, send } from './lib/ipc';
-import { Inbox, Radio, AlertTriangle } from 'lucide-react';
+import { Inbox, AlertTriangle } from 'lucide-react';
 
 const AUTOPILOT_PANES: TerminalPaneConfig[] = [
-  { id: 'researcher', agentName: 'Research Agent', agentType: 'terminal', status: 'waiting' },
-  { id: 'debate-a', agentName: 'Debate Agent A', agentType: 'terminal', status: 'waiting' },
-  { id: 'debate-b', agentName: 'Debate Agent B', agentType: 'terminal', status: 'waiting' },
-  { id: 'ticket-bot', agentName: 'Ticket Bot', agentType: 'direct-llm', status: 'waiting' },
+  { id: 'researcher', agentName: 'Research', agentType: 'terminal', status: 'waiting' },
+  { id: 'debate-a', agentName: 'Debate A', agentType: 'terminal', status: 'waiting' },
+  { id: 'debate-b', agentName: 'Debate B', agentType: 'terminal', status: 'waiting' },
+  { id: 'ticket-bot', agentName: 'Ticket', agentType: 'direct-llm', status: 'waiting' },
   { id: 'architect', agentName: 'Architect', agentType: 'terminal', status: 'waiting' },
   { id: 'developer', agentName: 'Developer', agentType: 'terminal', status: 'waiting' },
-  { id: 'reviewer', agentName: 'Code Reviewer', agentType: 'terminal', status: 'waiting' },
+  { id: 'reviewer', agentName: 'Reviewer', agentType: 'terminal', status: 'waiting' },
   { id: 'tester', agentName: 'Tester', agentType: 'terminal', status: 'waiting' },
   { id: 'pusher', agentName: 'Pusher', agentType: 'direct-llm', status: 'waiting' },
 ];
@@ -40,12 +40,6 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [workflowActive, setWorkflowActive] = useState(false);
   const [autopilotError, setAutopilotError] = useState<string | null>(null);
-  const [clock, setClock] = useState<string>(() => timecode());
-
-  useEffect(() => {
-    const i = setInterval(() => setClock(timecode()), 1000);
-    return () => clearInterval(i);
-  }, []);
 
   const startAutopilot = useCallback(async (project: Project) => {
     setAutopilotError(null);
@@ -63,8 +57,8 @@ function App() {
       const msg = e instanceof Error ? e.message : String(e);
       setAutopilotError(
         msg.includes('ECONNREFUSED') || msg.includes('No IPC handler')
-          ? `Could not start autopilot workflow: ${msg}. Is Temporal + the worker running? Try \`make dev\`.`
-          : `Could not start autopilot workflow: ${msg}`,
+          ? `Couldn't start autopilot: ${msg}. Is Temporal + the worker running? Try \`make dev\`.`
+          : `Couldn't start autopilot: ${msg}`,
       );
     }
   }, []);
@@ -81,8 +75,8 @@ function App() {
   const handleWorkflowSelect = useCallback(async (workflow: { name: string; language: string }) => {
     setAutopilotError(null);
     const live: TerminalPaneConfig[] = [
-      { id: `${workflow.name}-specialist`, agentName: `${workflow.name} · Specialist`, agentType: 'terminal', status: 'running' },
-      { id: `${workflow.name}-validator`, agentName: `${workflow.name} · Validator`, agentType: 'terminal', status: 'running' },
+      { id: `${workflow.name}-specialist`, agentName: `${workflow.name} · specialist`, agentType: 'terminal', status: 'running' },
+      { id: `${workflow.name}-validator`, agentName: `${workflow.name} · validator`, agentType: 'terminal', status: 'running' },
     ];
     setPanes(live);
     setWorkflowActive(true);
@@ -94,9 +88,9 @@ function App() {
       setActiveRun(runId);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setAutopilotError(`Could not start workflow: ${msg}`);
+      setAutopilotError(`Couldn't start workflow: ${msg}`);
     }
-  }, [activeProject]);
+  }, []);
 
   const handlePaneClose = useCallback((id: string) => {
     send('agent-kill', { id });
@@ -107,7 +101,7 @@ function App() {
     const newId = `agent-${Date.now()}`;
     const newPane: TerminalPaneConfig = {
       id: newId,
-      agentName: 'Ad-hoc Agent',
+      agentName: 'Ad-hoc agent',
       agentType: 'terminal',
       status: 'running',
     };
@@ -115,7 +109,7 @@ function App() {
   }, []);
 
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-[#0a0b0d] text-[#e8e6e0]">
+    <div className="flex h-screen w-full overflow-hidden bg-[var(--color-ink)] text-[var(--color-text)]">
       <Sidebar
         activeProject={activeProject}
         onProjectSelect={handleProjectSelect}
@@ -125,42 +119,37 @@ function App() {
       />
 
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Control-room header bar */}
-        <div className="h-11 shrink-0 border-b border-[#1e2024] bg-[#0a0b0d] flex items-stretch">
-          <div className="px-4 flex items-center gap-3 border-r border-[#1e2024]">
-            <Radio className="w-3.5 h-3.5 text-[#d4ff00]" />
-            <span className="font-display uppercase tracking-[0.3em] text-[10px] text-[#4a4d52]">run</span>
-            <span className="font-display text-[12px] text-[#e8e6e0] truncate max-w-[260px]">
-              {workflowActive ? (activeRun || 'starting…') : 'no active run'}
+        {/* Header — quiet identity, no telemetry decoration */}
+        <header className="h-14 shrink-0 border-b border-[var(--color-hair)] flex items-center px-6 gap-5">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="text-[14px] font-medium text-[var(--color-text)] truncate">
+              {activeProject?.name ?? <span className="text-[var(--color-text-muted)] font-normal">No project selected</span>}
             </span>
-          </div>
-
-          <div className="px-4 flex items-center gap-3 border-r border-[#1e2024]">
-            <span className="font-display uppercase tracking-[0.3em] text-[10px] text-[#4a4d52]">project</span>
-            <span className="font-display text-[12px] text-[#d4d2cc] truncate max-w-[220px]">
-              {activeProject?.name ?? '—'}
-            </span>
+            {workflowActive && (
+              <>
+                <span className="text-[var(--color-text-faint)]">/</span>
+                <span className="font-mono text-[12px] text-[var(--color-text-muted)] truncate">
+                  {activeRun || 'starting…'}
+                </span>
+              </>
+            )}
           </div>
 
           <div className="flex-1" />
 
           <button
             onClick={() => setShowInbox(true)}
-            className="px-4 flex items-center gap-2 border-l border-[#1e2024] text-[#8a8d92] hover:text-[#d4ff00] hover:bg-[#0d0f12] transition-colors"
+            className="flex items-center gap-2 text-[13px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors"
           >
-            <Inbox className="w-3.5 h-3.5" />
-            <span className="font-display uppercase tracking-[0.3em] text-[10px]">milestones</span>
+            <Inbox className="w-4 h-4" />
+            <span>Milestones</span>
           </button>
-
-          <div className="px-4 flex items-center border-l border-[#1e2024]">
-            <span className="font-display text-[12px] text-[#d4ff00] tabular-nums">{clock}</span>
-          </div>
-        </div>
+        </header>
 
         {autopilotError && (
-          <div className="mx-4 mt-3 px-3 py-2 border border-[#ff6b5a]/40 bg-[#170e0e] flex items-start gap-2">
-            <AlertTriangle className="w-3.5 h-3.5 text-[#ff6b5a] mt-[2px] shrink-0" />
-            <span className="font-body text-[11px] text-[#ff9b8f] leading-snug">{autopilotError}</span>
+          <div className="mx-6 mt-4 px-3.5 py-2.5 rounded-md border border-[var(--color-error)]/30 bg-[var(--color-error)]/8 flex items-start gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-[var(--color-error)] mt-[1px] shrink-0" />
+            <span className="text-[12.5px] text-[var(--color-error)]/90 leading-snug">{autopilotError}</span>
           </div>
         )}
 
@@ -179,7 +168,7 @@ function App() {
           </div>
 
           {workflowActive && (
-            <div className="w-64 shrink-0 border-l border-[#1e2024] bg-[#0a0b0d]">
+            <div className="w-72 shrink-0 border-l border-[var(--color-hair)]">
               <WorkflowGraph runId={activeRun || undefined} />
             </div>
           )}
@@ -194,37 +183,20 @@ function App() {
 
 function EmptyState() {
   return (
-    <div className="h-full w-full flex items-center justify-center relative bg-[#0a0b0d]">
-      <div
-        className="pointer-events-none absolute inset-0 opacity-40"
-        style={{
-          backgroundImage:
-            'linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px)',
-          backgroundSize: '40px 40px',
-        }}
-      />
-      <div className="relative z-10 text-center max-w-md px-6">
-        <div className="font-display uppercase tracking-[0.4em] text-[10px] text-[#4a4d52] mb-3">
-          standing by
-        </div>
-        <div className="font-display uppercase tracking-[0.18em] text-[20px] text-[#e8e6e0] leading-snug mb-2">
-          Select a project
+    <div className="h-full w-full flex items-center justify-center px-8">
+      <div className="max-w-md text-center">
+        <h1 className="font-serif italic text-[42px] leading-[1.05] text-[var(--color-text)] tracking-tight">
+          A quiet studio
           <br />
-          <span className="text-[#d4ff00]">·</span> launch a workflow
-          <br />
-          <span className="text-[#d4ff00]">·</span> engage autopilot
-        </div>
-        <div className="mt-4 font-body text-[12px] text-[#6b6b68] leading-relaxed">
-          Each agent streams its thinking, tool calls, and results into the grid — one rack unit per node, colour-coded by channel.
-        </div>
+          <span className="text-[var(--color-text-muted)]">for noisy agents.</span>
+        </h1>
+        <p className="mt-5 text-[13.5px] leading-[1.65] text-[var(--color-text-muted)]">
+          Pick a project to begin. Each agent streams its thinking, tools and
+          results into its own pane — composed, not shouted.
+        </p>
       </div>
     </div>
   );
-}
-
-function timecode(): string {
-  const d = new Date();
-  return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`;
 }
 
 export default App;
