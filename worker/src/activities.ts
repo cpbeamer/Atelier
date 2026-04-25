@@ -798,9 +798,80 @@ Rules:
       `Developer produced no file edits for ticket ${ticket.id}. Output preview: ${result.slice(0, 500)}`,
     );
   }
-  const applied = await applyFileEdits(worktreePath, edits);
+  let applied = await applyFileEdits(worktreePath, edits);
+  let finalCode = result;
 
-  return { code: result, filesChanged: applied };
+  // Self-critique pass: the developer re-reads its own diff before the
+  // reviewer panel sees it. If it finds concrete issues, we run one more
+  // implementation pass with those issues as feedback, then apply those
+  // edits on top. Skip the critique for feedback/testFeedback iterations
+  // (already addressing specific comments — another layer of critique is noise).
+  if (!feedback && !testFeedback) {
+    const critique = await runSelfCritique({
+      ticket, result, projectPath, runId,
+    });
+    if (critique && !critique.selfApproved && critique.issues.length > 0) {
+      const critiqueFeedback = critique.issues.map(
+        (i) => `${i.file}:${i.line ?? '?'} [${i.kind}]: ${i.fix}`,
+      );
+      const retryPrompt = `${prompt}\n\nSELF-CRITIQUE TO ADDRESS:\n${critiqueFeedback.join('\n')}`;
+      const retryResult = await callLLM(persona, retryPrompt, { cwd: worktreePath, agentId, runId });
+      const retryEdits = parseFileEdits(retryResult);
+      if (retryEdits.length > 0) {
+        applied = await applyFileEdits(worktreePath, retryEdits);
+        finalCode = retryResult;
+      }
+      // If the retry produced zero edits, keep the original — the first pass
+      // was at least valid code, and blocking on a bad retry is worse than
+      // letting the reviewer panel catch whatever the critic flagged.
+    }
+  }
+
+  return { code: finalCode, filesChanged: applied };
+}
+
+interface CritiqueResult {
+  selfApproved: boolean;
+  issues: Array<{ file: string; line?: number; kind: string; fix: string }>;
+}
+
+async function runSelfCritique(opts: {
+  ticket: ScopedTicket;
+  result: string;
+  projectPath: string;
+  runId?: string;
+}): Promise<CritiqueResult | null> {
+  const { ticket, result, projectPath, runId } = opts;
+  const criticAgentId = 'developer-critic';
+  await notifyAgentStart({ agentId: criticAgentId, agentName: 'Developer (self-critique)', terminalType: 'direct-llm' });
+  try {
+    const criticPersona = await loadPersona(projectPath, 'developer-critic');
+    const critique = await withJsonRetry<CritiqueResult>(
+      (suffix) => callLLM(
+        criticPersona,
+        `Ticket: ${ticket.title}\n${ticket.description}\n\nAcceptance:\n${ticket.acceptanceCriteria.map((c) => `- ${c}`).join('\n')}\n\nCode you just produced:\n${result.slice(0, 20000)}${suffix ?? ''}`,
+        { agentId: criticAgentId, runId },
+      ),
+      {
+        maxAttempts: 2,
+        validate: (v) =>
+          typeof v === 'object' && v !== null
+          && typeof (v as any).selfApproved === 'boolean'
+          && Array.isArray((v as any).issues),
+      },
+    );
+    await notifyAgentComplete({
+      agentId: criticAgentId,
+      status: 'completed',
+      output: critique.selfApproved
+        ? 'self-approved — no issues found'
+        : `${critique.issues.length} issue(s) to address`,
+    });
+    return critique;
+  } catch (e) {
+    await notifyAgentComplete({ agentId: criticAgentId, status: 'error', output: String(e).slice(0, 500) });
+    return null;
+  }
 }
 
 export async function reviewCode(input: ReviewInput & { worktreePath?: string }): Promise<ReviewResult> {
