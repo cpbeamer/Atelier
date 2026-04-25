@@ -858,6 +858,14 @@ Rules:
 export async function implementCodeBestOfN(
   input: ImplementInput & { n?: number },
 ): Promise<ImplementOutput> {
+  // Under opencode the inner agent iterates internally — spawning N parallel
+  // candidates would race on the worktree's git index and require per-ticket
+  // sub-worktrees to land safely. Defer that machinery; for now a single
+  // well-resourced opencode run replaces N brittle one-shot candidates.
+  if (process.env.ATELIER_USE_OPENCODE === '1') {
+    return implementCode(input);
+  }
+
   const { ticket, worktreePath, projectPath, feedback, testFeedback, runId } = input;
   const n = Math.max(2, input.n ?? 3);
 
