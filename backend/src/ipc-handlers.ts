@@ -129,14 +129,21 @@ register('settings.modelConfig:get', async () => {
     } catch {
       models = [];
     }
+    // Repair stale selected_model: if it's not in the current models list,
+    // fall back to the first model. Prevents a phantom dropdown value.
+    const stored = row.selected_model as string | null;
+    const selectedModel = stored && models.includes(stored) ? stored : (models[0] ?? null);
     result.push({
       id: row.id,
       name: row.name,
       baseUrl: row.base_url,
+      kind: row.kind ?? 'openai-compatible',
       enabled: row.enabled === 1,
       configured: !!apiKey,
+      isCustom: row.is_custom === 1,
+      isPrimary: row.is_primary === 1,
       models,
-      selectedModel: row.selected_model ?? (models[0] ?? null),
+      selectedModel,
     });
   }
   return result;
@@ -148,6 +155,53 @@ register('settings.modelConfig:set', async (opts: { id: string; enabled: boolean
 
 register('settings.modelConfig:selectModel', async (opts: { id: string; model: string }) => {
   modelConfig.setSelectedModel(opts.id, opts.model);
+});
+
+register('settings.modelConfig:setPrimary', async (opts: { id: string }) => {
+  const row = modelConfig.findById(opts.id);
+  if (!row) throw new Error(`Provider not found: ${opts.id}`);
+  modelConfig.setPrimary(opts.id);
+});
+
+register('settings.modelConfig:setModels', async (opts: { id: string; models: string[] }) => {
+  if (!Array.isArray(opts.models)) throw new Error('models must be an array');
+  modelConfig.setModels(opts.id, JSON.stringify(opts.models));
+});
+
+register('settings.modelConfig:add', async (opts: {
+  id: string;
+  name: string;
+  baseUrl: string;
+  kind: 'openai-compatible' | 'anthropic' | 'minimax';
+  models: string[];
+}) => {
+  const id = opts.id?.trim();
+  const name = opts.name?.trim();
+  const baseUrl = opts.baseUrl?.trim();
+  if (!/^[a-z0-9][a-z0-9-_]{1,40}$/i.test(id || '')) {
+    throw new Error('id must be alphanumeric (with -_), 2-41 chars');
+  }
+  if (!name) throw new Error('name is required');
+  if (!/^https?:\/\//.test(baseUrl || '')) throw new Error('baseUrl must start with http:// or https://');
+  if (!['openai-compatible', 'anthropic', 'minimax'].includes(opts.kind)) {
+    throw new Error('invalid kind');
+  }
+  if (modelConfig.findById(id)) throw new Error(`provider id "${id}" already exists`);
+  const models = Array.isArray(opts.models) ? opts.models.filter(m => typeof m === 'string' && m.trim()) : [];
+  modelConfig.addCustom(id, name, baseUrl, opts.kind, JSON.stringify(models));
+});
+
+register('settings.modelConfig:remove', async (opts: { id: string }) => {
+  const row = modelConfig.findById(opts.id);
+  if (!row) return;
+  if (row.is_custom !== 1) throw new Error('Cannot remove a curated provider');
+  modelConfig.removeCustom(opts.id);
+  // Best-effort: delete its keychain entry too.
+  try {
+    await keytarWithTimeout(
+      keytar.deletePassword(SERVICE_NAME, keychainKey(opts.id, 'apiKey'))
+    );
+  } catch { /* keyring unavailable — non-fatal */ }
 });
 
 register('settings.apiKey:get', async (opts: { providerId: string }) => {

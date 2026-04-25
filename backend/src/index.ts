@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { ptyManager } from './pty-manager.js';
 import { agentStreamManager, type AgentEvent } from './agent-stream.js';
 import { startSidecar, stopSidecar } from './sidecar-lifecycle.js';
-import { milestones } from './db.js';
+import { milestones, modelConfig, agentCalls, type AgentCallRecord } from './db.js';
 import { loadProjectContext, saveProjectContext } from './project-context.js';
 import './ipc-handlers.js';
 
@@ -258,6 +258,35 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // GET /api/settings/primaryProvider - resolve the primary provider for the worker
+  if (req.method === 'GET' && url.pathname === '/api/settings/primaryProvider') {
+    try {
+      const row = modelConfig.findPrimary();
+      if (!row) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'No primary provider set' }));
+        return;
+      }
+      let models: string[] = [];
+      try { models = JSON.parse(row.models_json || '[]'); } catch { models = []; }
+      const selectedModel = row.selected_model && models.includes(row.selected_model)
+        ? row.selected_model
+        : (models[0] ?? null);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        id: row.id,
+        name: row.name,
+        baseUrl: row.base_url,
+        kind: row.kind,
+        selectedModel,
+      }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: String(err) }));
+    }
+    return;
+  }
+
   // GET /api/settings/apiKey/:providerId - get API key from keychain
   if (req.method === 'GET' && url.pathname.startsWith('/api/settings/apiKey/')) {
     const providerId = url.pathname.split('/').pop();
@@ -309,8 +338,23 @@ const httpServer = http.createServer(async (req, res) => {
     if (ptyRunning) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'running' }));
+      return;
+    }
+    // PTY not running — may have exited (clean or crashed) or never spawned.
+    const exitState = ptyManager.getExitState(agentId);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    if (exitState) {
+      res.end(JSON.stringify({
+        status: exitState.exitCode === 0 ? 'completed' : 'error',
+        exitCode: exitState.exitCode,
+        signal: exitState.signal,
+        outputTail: exitState.outputTail,
+        output: exitState.outputTail,
+        error: exitState.exitCode !== 0
+          ? `PTY exited with code ${exitState.exitCode}${exitState.signal ? ` (signal ${exitState.signal})` : ''}`
+          : undefined,
+      }));
     } else {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'completed', output: '' }));
     }
     return;
@@ -406,6 +450,60 @@ const httpServer = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ error: String(err) }));
       }
     });
+    return;
+  }
+
+  // POST /api/agent/call — worker reports a completed LLM call for telemetry
+  if (req.method === 'POST' && url.pathname === '/api/agent/call') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const row = JSON.parse(body) as AgentCallRecord;
+        if (!row.runId || !row.agentId || !row.providerId || !row.model) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'runId, agentId, providerId, model required' }));
+          return;
+        }
+        agentCalls.record(row);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+    });
+    return;
+  }
+
+  // GET /api/runs/:runId/cost — aggregate totals + per-agent breakdown
+  if (req.method === 'GET' && url.pathname.startsWith('/api/runs/') && url.pathname.endsWith('/cost')) {
+    const parts = url.pathname.split('/');
+    const runId = parts[parts.length - 2];
+    try {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        total: agentCalls.totalsForRun(runId) ?? { total_tokens: 0, total_cost_usd: 0 },
+        byAgent: agentCalls.byAgentForRun(runId),
+      }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: String(err) }));
+    }
+    return;
+  }
+
+  // GET /api/runs/:runId/calls — raw call log (audit)
+  if (req.method === 'GET' && url.pathname.startsWith('/api/runs/') && url.pathname.endsWith('/calls')) {
+    const parts = url.pathname.split('/');
+    const runId = parts[parts.length - 2];
+    try {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(agentCalls.listByRun(runId)));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: String(err) }));
+    }
     return;
   }
 

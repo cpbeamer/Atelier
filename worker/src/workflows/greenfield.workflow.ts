@@ -30,31 +30,32 @@ export async function greenfieldWorkflow(input: GreenfieldInput): Promise<any> {
   // Validate and create initial tickets from user's NLP request
   await notifyAgentStart({ agentId: 'validator', agentName: 'Request Validator', terminalType: 'direct-llm' });
   const { tickets } = await generateTickets({
-    approvedFeatures: [{ name: userRequest, rationale: 'User requested directly', priority: 'high' }]
+    approvedFeatures: [{ name: userRequest, rationale: 'User requested directly', priority: 'high' }],
+    agentId: 'validator',
   });
   await notifyAgentComplete({ agentId: 'validator', status: 'completed' });
 
   // Scope tickets
   await notifyAgentStart({ agentId: 'architect', agentName: 'Architect', terminalType: 'terminal' });
-  const scopedTickets = await scopeArchitecture({ tickets, projectPath, worktreePath });
+  const scopedTickets = await scopeArchitecture({ tickets, projectPath, worktreePath, agentId: 'architect' });
   await notifyAgentComplete({ agentId: 'architect', status: 'completed' });
 
   // Implement → Review (3x) → Test (3x) per ticket
   for (const ticket of scopedTickets) {
     await notifyAgentStart({ agentId: 'developer', agentName: 'Developer', terminalType: 'terminal' });
-    const implementation = await implementCode({ ticket, worktreePath, projectPath });
+    const implementation = await implementCode({ ticket, worktreePath, projectPath, agentId: 'developer' });
     await notifyAgentComplete({ agentId: 'developer', status: 'completed' });
 
     // Review loop
     let reviewApproved = false;
     for (let i = 0; i < 3 && !reviewApproved; i++) {
       await notifyAgentStart({ agentId: 'reviewer', agentName: 'Code Reviewer', terminalType: 'terminal' });
-      const result = await reviewCode({ implementation, ticket });
+      const result = await reviewCode({ implementation, ticket, agentId: 'reviewer' });
       await notifyAgentComplete({ agentId: 'reviewer', status: 'completed' });
       if (result.approved) {
         reviewApproved = true;
       } else {
-        const revised = await implementCode({ ticket, worktreePath, projectPath, feedback: result.comments });
+        const revised = await implementCode({ ticket, worktreePath, projectPath, feedback: result.comments, agentId: 'developer' });
         implementation.code = revised.code;
       }
     }
@@ -69,7 +70,7 @@ export async function greenfieldWorkflow(input: GreenfieldInput): Promise<any> {
       if (result.allPassed) {
         testsPassed = true;
       } else {
-        const fixed = await implementCode({ ticket, worktreePath, projectPath, testFeedback: result.failures });
+        const fixed = await implementCode({ ticket, worktreePath, projectPath, testFeedback: result.failures, agentId: 'developer' });
         implementation.code = fixed.code;
       }
     }

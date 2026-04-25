@@ -1,18 +1,17 @@
 // frontend/src/components/TerminalPane.tsx
 //
-// Composite pane: shows the structured AgentTranscript by default, with a
-// toggle to drop into a raw xterm.js view for the underlying PTY stream.
+// Composite pane: structured AgentTranscript by default, raw xterm fallback.
 
 import { useState } from 'react';
 import { AgentTranscript } from './AgentTranscript';
 import { RawTerminalView } from './RawTerminalView';
+import { FileText, Terminal as TerminalIcon } from 'lucide-react';
 
 type ViewMode = 'structured' | 'raw';
 
 interface Props {
   agentId: string;
   isActive: boolean;
-  /** If this agent also has a backing PTY stream, supply its id to enable the raw view. */
   ptyId?: string;
   defaultView?: ViewMode;
 }
@@ -30,22 +29,28 @@ export function TerminalPane({ agentId, isActive, ptyId, defaultView = 'structur
       )}
 
       {canToggle && (
-        <div className="absolute top-2 right-2 z-10 flex border border-[#1e2024] bg-[#0d0f12]/80 backdrop-blur-sm">
+        <div className="absolute top-2.5 right-2.5 z-10 flex rounded-md border border-[var(--color-hair)] bg-[var(--color-surface)]/85 backdrop-blur-sm overflow-hidden">
           <button
             onClick={() => setView('structured')}
-            className={`px-2 py-1 text-[10px] font-display uppercase tracking-[0.25em] transition-colors ${
-              view === 'structured' ? 'bg-[#1e2024] text-[#d4ff00]' : 'text-[#6b6b68] hover:text-[#d4d2cc]'
+            className={`p-1.5 transition-colors ${
+              view === 'structured'
+                ? 'bg-[var(--color-surface-2)] text-[var(--color-accent)]'
+                : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]'
             }`}
+            title="Structured feed"
           >
-            feed
+            <FileText className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={() => setView('raw')}
-            className={`px-2 py-1 text-[10px] font-display uppercase tracking-[0.25em] transition-colors ${
-              view === 'raw' ? 'bg-[#1e2024] text-[#d4ff00]' : 'text-[#6b6b68] hover:text-[#d4d2cc]'
+            className={`p-1.5 transition-colors ${
+              view === 'raw'
+                ? 'bg-[var(--color-surface-2)] text-[var(--color-accent)]'
+                : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]'
             }`}
+            title="Raw terminal"
           >
-            raw
+            <TerminalIcon className="w-3.5 h-3.5" />
           </button>
         </div>
       )}

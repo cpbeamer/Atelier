@@ -23,24 +23,14 @@ export function MilestoneInbox({ isOpen, onClose }: Props) {
   useEffect(() => {
     if (isOpen) {
       loadMilestones();
-      // Subscribe to WebSocket for new milestones
       const ws = new WebSocket('ws://localhost:3000');
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
-          if (msg.type === 'milestone:pending') {
-            loadMilestones();
-          }
-        } catch {
-          // Ignore parse errors
-        }
+          if (msg.type === 'milestone:pending') loadMilestones();
+        } catch { /* ignore */ }
       };
-      ws.onerror = () => {
-        console.error('WebSocket error');
-      };
-      ws.onclose = () => {
-        // WebSocket closed
-      };
+      ws.onerror = () => console.error('WebSocket error');
       return () => ws.close();
     }
   }, [isOpen]);
@@ -69,29 +59,34 @@ export function MilestoneInbox({ isOpen, onClose }: Props) {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className="relative bg-card border border-border rounded-lg shadow-xl w-full max-w-lg max-h-[80vh] flex flex-col">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
-          <h2 className="text-lg font-semibold">Milestones</h2>
-          <button onClick={onClose} className="p-1 rounded hover:bg-secondary">
-            <X className="w-5 h-5" />
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px]" onClick={onClose} />
+      <div className="relative bg-[var(--color-surface)] border border-[var(--color-hair)] rounded-xl shadow-2xl w-full max-w-xl max-h-[80vh] flex flex-col fade-in">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--color-hair)]">
+          <h2 className="text-[16px] font-medium">Milestones</h2>
+          <button
+            onClick={onClose}
+            className="p-1 rounded text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-surface-2)] transition-colors"
+          >
+            <X className="w-4 h-4" />
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-6">
-          {loading && <p className="text-muted-foreground">Loading...</p>}
+        <div className="flex-1 overflow-y-auto px-6 py-4">
+          {loading && <p className="text-[13px] text-[var(--color-text-muted)]">Loading…</p>}
           {!loading && milestones.length === 0 && (
-            <p className="text-muted-foreground">No pending milestones</p>
+            <p className="text-[13px] text-[var(--color-text-muted)]">No pending milestones.</p>
           )}
-          {milestones.map(milestone => (
-            <MilestoneItem
-              key={milestone.id}
-              milestone={milestone}
-              onApprove={(reason) => handleResolve(milestone.id, 'Approved', reason)}
-              onReject={(reason) => handleResolve(milestone.id, 'Rejected', reason)}
-            />
-          ))}
+          <div className="space-y-3">
+            {milestones.map(milestone => (
+              <MilestoneItem
+                key={milestone.id}
+                milestone={milestone}
+                onApprove={(reason) => handleResolve(milestone.id, 'Approved', reason)}
+                onReject={(reason) => handleResolve(milestone.id, 'Rejected', reason)}
+              />
+            ))}
+          </div>
         </div>
       </div>
     </div>
@@ -112,56 +107,44 @@ function MilestoneItem({
   let payload: any = {};
   try {
     payload = JSON.parse(milestone.payload_json || '{}');
-  } catch {
-    // Ignore parse errors
-  }
+  } catch { /* ignore */ }
 
   return (
-    <div className="border border-border rounded-lg p-4 mb-4">
-      <div className="font-medium mb-2">{milestone.type}</div>
-      <div className="text-sm text-muted-foreground mb-4">
-        Created: {new Date(milestone.created_at).toLocaleString()}
+    <div className="rounded-lg border border-[var(--color-hair)] bg-[var(--color-surface-2)]/60 p-4">
+      <div className="flex items-baseline justify-between mb-2 gap-2">
+        <span className="text-[13.5px] font-medium text-[var(--color-text)]">{milestone.type}</span>
+        <span className="text-[11px] text-[var(--color-text-faint)] font-mono shrink-0">
+          {new Date(milestone.created_at).toLocaleString()}
+        </span>
       </div>
 
-      {payload.synthesis && (
-        <div className="bg-muted rounded p-3 mb-4 text-sm max-h-40 overflow-y-auto">
-          <pre className="whitespace-pre-wrap">{payload.synthesis}</pre>
-        </div>
-      )}
-      {payload.design && (
-        <div className="bg-muted rounded p-3 mb-4 text-sm max-h-40 overflow-y-auto">
-          <pre className="whitespace-pre-wrap">{payload.design}</pre>
-        </div>
-      )}
-      {payload.code && (
-        <div className="bg-muted rounded p-3 mb-4 text-sm max-h-40 overflow-y-auto">
-          <pre className="whitespace-pre-wrap">{payload.code}</pre>
-        </div>
+      {(payload.synthesis || payload.design || payload.code) && (
+        <pre className="mb-3 px-3 py-2 rounded bg-[var(--color-ink)] border border-[var(--color-hair)] text-[11.5px] font-mono text-[var(--color-text-dim)] whitespace-pre-wrap max-h-44 overflow-y-auto">
+          {payload.synthesis || payload.design || payload.code}
+        </pre>
       )}
 
-      <div className="flex items-center gap-2 mb-2">
-        <input
-          type="text"
-          placeholder="Optional reason..."
-          value={reason}
-          onChange={(e) => setReason(e.target.value)}
-          className="flex-1 bg-background border border-border rounded px-2 py-1 text-sm"
-        />
-      </div>
+      <input
+        type="text"
+        placeholder="Optional reason…"
+        value={reason}
+        onChange={(e) => setReason(e.target.value)}
+        className="w-full mb-3 bg-[var(--color-ink)] border border-[var(--color-hair)] rounded-md px-3 py-2 text-[13px] focus:outline-none focus:border-[var(--color-accent)]/40 transition-colors"
+      />
 
       <div className="flex gap-2">
         <button
           onClick={() => onApprove(reason || undefined)}
-          className="flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white rounded text-sm hover:bg-green-700"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[var(--color-accent)] text-[var(--color-ink)] text-[12.5px] font-medium hover:opacity-90 transition-opacity"
         >
-          <Check className="w-4 h-4" />
+          <Check className="w-3.5 h-3.5" />
           Approve
         </button>
         <button
           onClick={() => onReject(reason || undefined)}
-          className="flex items-center gap-1 px-3 py-1.5 bg-red-600 text-white rounded text-sm hover:bg-red-700"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-[var(--color-hair-2)] text-[var(--color-text-dim)] text-[12.5px] hover:border-[var(--color-error)]/40 hover:text-[var(--color-error)] transition-colors"
         >
-          <XCircle className="w-4 h-4" />
+          <XCircle className="w-3.5 h-3.5" />
           Reject
         </button>
       </div>
