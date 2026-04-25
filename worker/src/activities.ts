@@ -232,6 +232,8 @@ function stripThinking(output: string): string {
 
 interface FileEdit { kind: 'write' | 'delete'; path: string; contents?: string; }
 
+// Legacy: only used on the one-shot LLM dictation path (ATELIER_USE_OPENCODE!=1).
+// Under opencode the agent edits files directly via its own tools.
 function parseFileEdits(raw: string): FileEdit[] {
   const output = stripThinking(raw);
   const edits: FileEdit[] = [];
