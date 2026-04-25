@@ -358,77 +358,145 @@ export async function spawnAgent(
   return callLLM(systemPrompt, fullPrompt);
 }
 
-// Stub implementations - replace with real agent logic in later tasks
-
-export async function researchRepo(input: ResearchInput): Promise<ResearchOutput> {
-  const { projectPath, userContext = {}, agentId, runId } = input;
-
-  // Read key files
+// Gather raw repo context that all researcher specialists share.
+async function gatherRepoContext(projectPath: string): Promise<{ baseContext: string; srcFiles: string[] }> {
   const readme = await readFile(path.join(projectPath, 'README.md')).catch(() => '');
   const packageJson = await readFile(path.join(projectPath, 'package.json')).catch(() => '');
+  const pyprojectToml = await readFile(path.join(projectPath, 'pyproject.toml')).catch(() => '');
+  const cargoToml = await readFile(path.join(projectPath, 'Cargo.toml')).catch(() => '');
+  const goMod = await readFile(path.join(projectPath, 'go.mod')).catch(() => '');
   const srcDir = path.join(projectPath, 'src');
   const srcFiles = await listDir(srcDir).catch(() => []);
 
-  // Build repo structure summary
-  const repoStructure = [
-    `README.md: ${readme.split('\n').slice(0, 10).join(' ')}...`,
-    `package.json: ${packageJson}`,
-    `src/: ${srcFiles.slice(0, 20).join(', ')}${srcFiles.length > 20 ? '...' : ''}`,
-  ].join('\n');
+  const baseContext = [
+    `# Project: ${projectPath}`,
+    readme && `## README.md (first 60 lines)\n${readme.split('\n').slice(0, 60).join('\n')}`,
+    packageJson && `## package.json\n${packageJson.slice(0, 4000)}`,
+    pyprojectToml && `## pyproject.toml\n${pyprojectToml.slice(0, 2000)}`,
+    cargoToml && `## Cargo.toml\n${cargoToml.slice(0, 2000)}`,
+    goMod && `## go.mod\n${goMod.slice(0, 2000)}`,
+    srcFiles.length > 0 && `## src/ listing (first 30)\n${srcFiles.slice(0, 30).join(', ')}${srcFiles.length > 30 ? ' …' : ''}`,
+  ].filter(Boolean).join('\n\n');
 
-  // Parse package.json for current features
-  let currentFeatures: string[] = [];
-  let gaps: string[] = [];
+  return { baseContext, srcFiles };
+}
+
+// Recent commit subjects for the history specialist. Best-effort — a repo
+// with no git history just produces an empty string and the specialist says so.
+async function gitHistorySummary(projectPath: string, sinceDays = 90): Promise<string> {
   try {
-    const pkg = JSON.parse(packageJson);
-    currentFeatures = Object.keys(pkg.dependencies || {}).slice(0, 10);
-    if (!pkg.scripts?.test) gaps.push('No test script');
-    if (!pkg.scripts?.lint) gaps.push('No lint script');
-    if (!pkg.github) gaps.push('No GitHub Actions configured');
+    const result = await execCmd('git', [
+      'log', `--since=${sinceDays}.days`, '--pretty=format:%ad %h %s', '--date=short', '-n', '200',
+    ], projectPath, 30_000);
+    if (result.code !== 0) return '';
+    return result.stdout.trim();
   } catch {
-    gaps.push('Could not parse package.json');
-  }
-
-  // Call Claude Code research via persona
-  const researchPrompt = `
-Project path: ${projectPath}
-
-User context (from previous sessions):
-${Object.entries(userContext).map(([k, v]) => `${k}: ${v}`).join('\n')}
-
-Research this codebase. Read README.md, package.json, and key source files.
-Identify:
-1. What does this project do?
-2. What are the current features?
-3. What gaps or technical debt exists?
-4. What opportunities for improvement?
-
-Format your response as JSON with fields: repoStructure, currentFeatures, gaps, opportunities, marketContext
-`;
-
-  const persona = await loadPersona(projectPath, 'researcher');
-  const result = await callLLM(persona, researchPrompt, { cwd: projectPath, agentId, runId });
-
-  // Parse the result
-  try {
-    const parsed = JSON.parse(result);
-    return {
-      repoStructure: parsed.repoStructure || repoStructure,
-      currentFeatures: parsed.currentFeatures || currentFeatures,
-      gaps: parsed.gaps || gaps,
-      opportunities: parsed.opportunities || [],
-      marketContext: parsed.marketContext || '',
-    };
-  } catch {
-    return {
-      repoStructure,
-      currentFeatures,
-      gaps,
-      opportunities: [],
-      marketContext: '',
-    };
+    return '';
   }
 }
+
+const RESEARCHER_SPECIALISTS = ['architecture', 'dependencies', 'tests', 'history'] as const;
+type ResearcherSpecialist = typeof RESEARCHER_SPECIALISTS[number];
+
+export async function researchRepo(input: ResearchInput): Promise<ResearchOutput> {
+  const { projectPath, userContext = {}, runId } = input;
+
+  const { baseContext } = await gatherRepoContext(projectPath);
+  const history = await gitHistorySummary(projectPath);
+  const panel = await loadPanel(process.cwd(), 'researcher', RESEARCHER_SPECIALISTS);
+
+  // Fan out — each specialist gets the shared base context plus any specialist-
+  // specific extra context (git history for the history specialist).
+  const fragments = await Promise.all(RESEARCHER_SPECIALISTS.map(async (specialist) => {
+    const agentId = `researcher-${specialist}`;
+    await notifyAgentStart({ agentId, agentName: `Researcher (${specialist})`, terminalType: 'direct-llm' });
+    try {
+      const extra = specialist === 'history'
+        ? `\n\n## Recent git history (subject lines, last 90 days)\n${history || '(no git history or git log failed)'}`
+        : '';
+      const out = await withJsonRetry<Record<string, unknown>>(
+        (suffix) => callLLM(panel[specialist], `${baseContext}${extra}${suffix ?? ''}`, {
+          cwd: projectPath, agentId, runId,
+        }),
+        {
+          maxAttempts: 2,
+          validate: (v) => typeof v === 'object' && v !== null,
+        },
+      );
+      await notifyAgentComplete({ agentId, status: 'completed', output: JSON.stringify(out).slice(0, 500) });
+      return [specialist, out] as const;
+    } catch (e) {
+      await notifyAgentComplete({ agentId, status: 'error', output: String(e).slice(0, 500) });
+      return [specialist, { error: String(e) }] as const;
+    }
+  }));
+
+  const specialistFindings = Object.fromEntries(fragments) as Record<ResearcherSpecialist, Record<string, unknown>>;
+
+  // Synthesize into the canonical ResearchOutput shape.
+  const synthPersona = await loadPersona(process.cwd(), 'researcher-synthesizer');
+  const synthPrompt = `User context: ${JSON.stringify(userContext)}\n\nSpecialist findings:\n${JSON.stringify(specialistFindings, null, 2)}`;
+
+  try {
+    return await withJsonRetry<ResearchOutput>(
+      (suffix) => callLLM(synthPersona, `${synthPrompt}${suffix ?? ''}`, {
+        cwd: projectPath,
+        agentId: 'researcher',
+        runId,
+      }),
+      {
+        maxAttempts: 3,
+        validate: (v): v is ResearchOutput =>
+          typeof v === 'object' && v !== null
+          && typeof (v as any).repoStructure === 'string'
+          && Array.isArray((v as any).currentFeatures)
+          && Array.isArray((v as any).gaps)
+          && Array.isArray((v as any).opportunities),
+      },
+    );
+  } catch {
+    // Synthesizer failed — fall back to a deterministic merge of whatever the
+    // specialists produced, so the pipeline can still proceed.
+    return fallbackSynthesizeResearch(specialistFindings, baseContext);
+  }
+}
+
+function fallbackSynthesizeResearch(
+  findings: Record<ResearcherSpecialist, Record<string, unknown>>,
+  baseContext: string,
+): ResearchOutput {
+  const arch: any = findings.architecture ?? {};
+  const deps: any = findings.dependencies ?? {};
+  const tests: any = findings.tests ?? {};
+  const history: any = findings.history ?? {};
+
+  const modulesLine = Array.isArray(arch.modules)
+    ? arch.modules.map((m: any) => `${m.name} (${m.path})`).join(', ')
+    : '';
+  const repoStructure = [arch.layering, modulesLine].filter(Boolean).join(' · ')
+    || baseContext.split('\n').slice(0, 3).join(' ');
+
+  const currentFeatures: string[] = [];
+  if (Array.isArray(arch.entrypoints)) currentFeatures.push(...arch.entrypoints.map((e: any) => String(e.name ?? e)));
+  if (Array.isArray(deps.runtime)) currentFeatures.push(...deps.runtime.slice(0, 6).map((d: any) => String(d.name ?? d)));
+
+  const gaps: string[] = [];
+  if (Array.isArray(deps.risks)) gaps.push(...deps.risks);
+  if (Array.isArray(tests.gapsByArea)) gaps.push(...tests.gapsByArea);
+  if (tests.approximateCoverage === 'none' || tests.approximateCoverage === 'minimal') {
+    gaps.push(`Test coverage: ${tests.approximateCoverage}`);
+  }
+  if (Array.isArray(history.refactorSignals)) gaps.push(...history.refactorSignals);
+
+  return {
+    repoStructure: repoStructure.slice(0, 1000),
+    currentFeatures: currentFeatures.slice(0, 10),
+    gaps: gaps.slice(0, 10),
+    opportunities: Array.isArray(history.recentThemes) ? history.recentThemes.slice(0, 5) : [],
+    marketContext: '(synthesizer unavailable — filled from specialist findings only)',
+  };
+}
+
 
 export async function debateFeatures(input: DebateInput): Promise<DebateOutput> {
   const { repoAnalysis, suggestedFeatures, agentIds, runId } = input;
