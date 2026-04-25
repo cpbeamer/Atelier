@@ -102,6 +102,24 @@ export interface ReviewInput {
   runId?: string;
 }
 
+export interface PanelReviewInput {
+  implementation: Implementation;
+  ticket: ScopedTicket;
+  worktreePath?: string;
+  runId?: string;
+}
+
+export interface PanelReviewResult {
+  approved: boolean;
+  blockers: Array<{ from: string; detail: string }>;
+  advisories: Array<{ from: string; detail: string }>;
+  summary: string;
+  /** Raw per-specialist verdicts, keyed by specialist name. Useful for audit. */
+  rawVerdicts: Record<string, unknown>;
+  /** Combined, prioritised feedback strings suitable for handing back to the developer. */
+  comments: string[];
+}
+
 export interface TestResult {
   allPassed: boolean;
   failures: string[];
@@ -616,7 +634,9 @@ Rules:
 export async function reviewCode(input: ReviewInput & { worktreePath?: string }): Promise<ReviewResult> {
   const { implementation, ticket, worktreePath, agentId, runId } = input;
 
-  const persona = await loadPersona(process.cwd(), 'code-reviewer');
+  // reviewer-correctness now narrowly owns "does the code meet acceptance
+  // criteria?" The full 4-specialist panel lives in reviewCodePanel.
+  const persona = await loadPersona(process.cwd(), 'reviewer-correctness');
 
   const fileContents = worktreePath && implementation.filesChanged.length > 0
     ? await readFilesForContext(worktreePath, implementation.filesChanged)
@@ -648,6 +668,146 @@ Evaluate against the acceptance criteria. Respond with ONLY a JSON object (no pr
         && Array.isArray((v as any).comments),
     },
   );
+}
+
+const REVIEWER_SPECIALISTS = ['correctness', 'security', 'tests', 'style'] as const;
+type ReviewerSpecialist = typeof REVIEWER_SPECIALISTS[number];
+
+/**
+ * Multi-specialist reviewer. Runs correctness/security/tests/style in
+ * parallel against the same implementation, then a synthesizer aggregates
+ * the verdicts into a single approve/block decision plus concrete feedback.
+ * Replaces the single-reviewer path; each specialist has its own narrow
+ * prompt scope (see reviewer-<specialist>.md).
+ */
+export async function reviewCodePanel(input: PanelReviewInput): Promise<PanelReviewResult> {
+  const { implementation, ticket, worktreePath, runId } = input;
+
+  const panelPrompts = await loadPanel(process.cwd(), 'reviewer', REVIEWER_SPECIALISTS);
+
+  const fileContents = worktreePath && implementation.filesChanged.length > 0
+    ? await readFilesForContext(worktreePath, implementation.filesChanged)
+    : '(no files to read)';
+
+  const sharedContext = `
+Ticket: ${ticket.title}
+${ticket.description}
+
+ACCEPTANCE CRITERIA:
+${ticket.acceptanceCriteria.map((c) => `- ${c}`).join('\n')}
+
+FILES CHANGED: ${implementation.filesChanged.join(', ')}
+
+Current file contents on disk:
+${fileContents}
+
+Evaluate strictly within your specialist scope. Respond with JSON only.
+`;
+
+  const verdicts = await Promise.all(
+    REVIEWER_SPECIALISTS.map(async (specialist) => {
+      const agentId = `reviewer-${specialist}`;
+      await notifyAgentStart({ agentId, agentName: `Reviewer (${specialist})`, terminalType: 'direct-llm' });
+      try {
+        const verdict = await withJsonRetry<Record<string, unknown>>(
+          (suffix) => callLLM(panelPrompts[specialist], `${sharedContext}${suffix ?? ''}`, {
+            cwd: worktreePath, agentId, runId,
+          }),
+          {
+            maxAttempts: 2,
+            validate: (v) => typeof v === 'object' && v !== null && 'approved' in (v as object),
+          },
+        );
+        await notifyAgentComplete({
+          agentId,
+          status: 'completed',
+          output: JSON.stringify(verdict).slice(0, 500),
+        });
+        return [specialist, verdict] as const;
+      } catch (e) {
+        // If a single specialist can't produce valid JSON after 2 tries, treat
+        // that specialist as blocking — missing signal is worse than a false
+        // approval from the rest of the panel.
+        await notifyAgentComplete({ agentId, status: 'error', output: String(e).slice(0, 500) });
+        return [specialist, { approved: false, error: String(e) }] as const;
+      }
+    }),
+  );
+
+  const rawVerdicts = Object.fromEntries(verdicts) as Record<ReviewerSpecialist, Record<string, unknown>>;
+
+  // Synthesizer — a 5th LLM call that aggregates. Faithful aggregation only;
+  // never flips a specialist's verdict.
+  const synthPersona = await loadPersona(process.cwd(), 'reviewer-synthesizer');
+  const synthAgentId = 'reviewer-synthesizer';
+  await notifyAgentStart({ agentId: synthAgentId, agentName: 'Reviewer Synthesizer', terminalType: 'direct-llm' });
+  type Synth = { approved: boolean; blockers: Array<{ from?: string; detail?: string } | string>; advisories: Array<{ from?: string; detail?: string } | string>; summary: string };
+  let synth: Synth;
+  try {
+    synth = await withJsonRetry<Synth>(
+      (suffix) => callLLM(
+        synthPersona,
+        `Panel verdicts:\n${JSON.stringify(rawVerdicts, null, 2)}${suffix ?? ''}`,
+        { agentId: synthAgentId, runId },
+      ),
+      {
+        maxAttempts: 2,
+        validate: (v) =>
+          typeof v === 'object' && v !== null
+          && typeof (v as any).approved === 'boolean'
+          && Array.isArray((v as any).blockers)
+          && Array.isArray((v as any).advisories),
+      },
+    );
+  } catch {
+    // Synthesizer itself failed — fall back to a deterministic aggregation
+    // instead of blocking the whole pipeline on a meta-reviewer.
+    synth = fallbackSynthesize(rawVerdicts);
+  }
+  await notifyAgentComplete({ agentId: synthAgentId, status: 'completed', output: synth.summary });
+
+  const normalize = (e: { from?: string; detail?: string } | string, fallbackFrom: string) =>
+    typeof e === 'string'
+      ? { from: fallbackFrom, detail: e }
+      : { from: e.from ?? fallbackFrom, detail: e.detail ?? JSON.stringify(e) };
+
+  const blockers = synth.blockers.map((b) => normalize(b, 'panel'));
+  const advisories = synth.advisories.map((a) => normalize(a, 'panel'));
+
+  return {
+    approved: synth.approved,
+    blockers,
+    advisories,
+    summary: synth.summary,
+    rawVerdicts,
+    comments: blockers.map((b) => `[${b.from}] ${b.detail}`),
+  };
+}
+
+function fallbackSynthesize(rawVerdicts: Record<string, any>): {
+  approved: boolean;
+  blockers: Array<{ from: string; detail: string }>;
+  advisories: Array<{ from: string; detail: string }>;
+  summary: string;
+} {
+  const blockers: Array<{ from: string; detail: string }> = [];
+  for (const [specialist, v] of Object.entries(rawVerdicts)) {
+    if (!v || typeof v !== 'object') continue;
+    if (v.approved === false) {
+      // Pull whatever findings are available — each specialist uses a slightly
+      // different field name (comments/findings/untested/issues).
+      const raw = v.comments ?? v.findings ?? v.untested ?? v.issues ?? [`${specialist} did not approve`];
+      for (const item of (Array.isArray(raw) ? raw : [raw])) {
+        blockers.push({ from: specialist, detail: typeof item === 'string' ? item : JSON.stringify(item) });
+      }
+    }
+  }
+  return {
+    approved: blockers.length === 0,
+    blockers,
+    advisories: [],
+    summary: blockers.length === 0 ? 'All specialists approved' : `${blockers.length} blocker(s) from panel (synthesizer fallback)`,
+  };
 }
 
 interface TestCommand { cmd: string; args: string[]; label: string; }

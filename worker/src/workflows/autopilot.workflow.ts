@@ -9,7 +9,7 @@ const {
   generateTickets,
   scopeArchitecture,
   implementCode,
-  reviewCode,
+  reviewCodePanel,
   testCode,
   verifyCode,
   pushChanges,
@@ -104,19 +104,21 @@ export async function autopilotWorkflow(input: AutopilotInput): Promise<Autopilo
       output: `ticket ${ticket.id}\nchanged: ${implementation.filesChanged.join(', ') || '(none)'}`,
     });
 
+    // Review loop — 4-specialist panel + synthesizer. Sub-agent notifications
+    // are emitted inside reviewCodePanel; we keep this loop oblivious to the
+    // fan-out shape so tightening/relaxing the panel doesn't churn the workflow.
     let reviewApproved = false;
     for (let reviewLoop = 0; reviewLoop < 3 && !reviewApproved; reviewLoop++) {
-      await notifyAgentStart({ agentId: 'reviewer', agentName: 'Code Reviewer', terminalType: 'terminal' });
-      const reviewResult = await reviewCode({ implementation, ticket, worktreePath, agentId: 'reviewer', runId });
-      await notifyAgentComplete({
-        agentId: 'reviewer',
-        status: 'completed',
-        output: `approved: ${reviewResult.approved}\n${reviewResult.comments.join('\n')}`,
-      });
+      const reviewResult = await reviewCodePanel({ implementation, ticket, worktreePath, runId });
       if (reviewResult.approved) {
         reviewApproved = true;
       } else {
-        const revised = await implementCode({ ticket, worktreePath, projectPath, feedback: reviewResult.comments, agentId: 'developer', runId });
+        const revised = await implementCode({
+          ticket, worktreePath, projectPath,
+          feedback: reviewResult.comments,
+          agentId: 'developer',
+          runId,
+        });
         implementation.code = revised.code;
         implementation.filesChanged = revised.filesChanged;
       }
