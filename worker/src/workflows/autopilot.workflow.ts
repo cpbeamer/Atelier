@@ -11,6 +11,7 @@ const {
   implementCode,
   reviewCode,
   testCode,
+  verifyCode,
   pushChanges,
   notifyAgentStart,
   notifyAgentComplete,
@@ -144,6 +145,35 @@ export async function autopilotWorkflow(input: AutopilotInput): Promise<Autopilo
     if (!testsPassed) {
       return { status: 'stalled', ticketsCreated: scopedTickets.length, stalledReason: `Test loop exceeded for ticket ${ticket.id}` };
     }
+  }
+
+  // Phase 7.5: Verify (typecheck + lint). One auto-fix pass against the last
+  // ticket if it fails — often the most recent edit introduced the regression.
+  // If still failing, stall with the verifier output so humans can intervene.
+  await notifyAgentStart({ agentId: 'verifier', agentName: 'Verifier', terminalType: 'direct-llm' });
+  let verifyResult = await verifyCode({ worktreePath });
+  if (!verifyResult.allPassed && scopedTickets.length > 0) {
+    const failures = verifyResult.results
+      .filter((r) => !r.passed)
+      .map((r) => `[${r.label}]\n${r.output}`);
+    const lastTicket = scopedTickets[scopedTickets.length - 1];
+    const implementation = { ticketId: lastTicket.id, code: '', filesChanged: [] as string[] };
+    const fixed = await implementCode({ ticket: lastTicket, worktreePath, projectPath, testFeedback: failures, agentId: 'developer', runId });
+    implementation.code = fixed.code;
+    implementation.filesChanged = fixed.filesChanged;
+    verifyResult = await verifyCode({ worktreePath });
+  }
+  await notifyAgentComplete({
+    agentId: 'verifier',
+    status: verifyResult.allPassed ? 'completed' : 'error',
+    output: verifyResult.results.map((r) => `${r.label}: ${r.passed ? 'PASS' : 'FAIL'}\n${r.output}`).join('\n---\n'),
+  });
+  if (!verifyResult.allPassed) {
+    return {
+      status: 'stalled',
+      ticketsCreated: scopedTickets.length,
+      stalledReason: `verify failed: ${verifyResult.results.filter((r) => !r.passed).map((r) => r.label).join(', ')}`,
+    };
   }
 
   // Phase 8: Push

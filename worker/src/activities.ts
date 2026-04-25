@@ -125,6 +125,15 @@ export interface PushInput {
   tickets: ScopedTicket[];
 }
 
+export interface VerifyInput {
+  worktreePath: string;
+}
+
+export interface VerifyOutput {
+  allPassed: boolean;
+  results: Array<{ label: string; passed: boolean; output: string }>;
+}
+
 export interface SetupWorkspaceInput {
   projectPath: string;
   projectSlug: string;
@@ -155,6 +164,7 @@ import { spawn } from 'node:child_process';
 import { callLLM, getPrimaryModelName } from './llm/callLLM.js';
 import { withJsonRetry } from './llm/withJsonRetry.js';
 import { NonRetryableAgentError } from './errors.js';
+import { runVerify } from './verify.js';
 
 async function readFile(filePath: string): Promise<string> {
   return fs.promises.readFile(filePath, 'utf-8');
@@ -786,6 +796,10 @@ export async function pushChanges(input: PushInput): Promise<PushResult> {
   }
 
   return { branch, commitSha: sha.stdout.trim() };
+}
+
+export async function verifyCode(input: VerifyInput): Promise<VerifyOutput> {
+  return runVerify(input.worktreePath);
 }
 
 async function emitAgentEvent(id: string, event: { kind: string; [k: string]: any }): Promise<void> {
