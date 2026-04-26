@@ -175,3 +175,35 @@ export async function sendDeveloperPrompt(input: ServeMessageInput): Promise<Ser
     sessionId,
   };
 }
+
+export interface AgentPromptInput {
+  runId: string;
+  /** Persona key used to name/reuse the opencode session (e.g. 'researcher-architecture'). */
+  personaKey: string;
+  /** Full persona system-prompt text, injected into the user message body. */
+  personaText: string;
+  /** The task-specific user message body. */
+  userPrompt: string;
+  /** Optional model override: "primary/ModelName". */
+  model?: string;
+}
+
+/** Send a read-only analyst prompt to an existing per-run opencode session.
+ *  The model is instructed not to write files and to respond with JSON only.
+ *  Returns the raw text — callers parse it with withJsonRetry. */
+export async function sendAgentPrompt(input: AgentPromptInput): Promise<string> {
+  const { runId, personaKey, personaText, userPrompt, model } = input;
+  const prompt = [
+    'ANALYSIS MODE: You must not write, edit, or delete any files.',
+    'Use your read, grep, glob, and bash tools to explore the codebase.',
+    '',
+    personaText,
+    '',
+    userPrompt,
+    '',
+    'IMPORTANT: Respond with ONLY valid JSON. No prose, no markdown fences, no text outside the JSON structure.',
+  ].join('\n');
+
+  const result = await sendDeveloperPrompt({ runId, persona: personaKey, prompt, model });
+  return result.text;
+}
