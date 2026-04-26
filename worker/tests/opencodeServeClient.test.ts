@@ -56,3 +56,54 @@ test('getServeRunInfo throws on 500', async () => {
   globalThis.fetch = mock(async () => new Response('boom', { status: 500 })) as any;
   await expect(getServeRunInfo('any')).rejects.toThrow(/HTTP 500/);
 });
+
+// ── sendAgentPrompt tests ─────────────────────────────────────────────────────
+
+import { sendAgentPrompt } from '../src/llm/opencodeServeClient';
+
+test('sendAgentPrompt prepends ANALYSIS MODE and persona text', async () => {
+  let capturedPrompt = '';
+  globalThis.fetch = mock(async (urlOrReq: any, init: any) => {
+    // The opencode SDK passes a Request object; direct fetch() calls pass a string URL.
+    const isRequest = typeof urlOrReq === 'object' && urlOrReq instanceof Request;
+    const u = isRequest ? urlOrReq.url : String(urlOrReq);
+    if (u.includes('/api/opencode/run/run-1') && !u.includes('/session/')) {
+      return new Response(JSON.stringify({
+        runId: 'run-1', worktreePath: '/tmp/wt', port: 9999, password: 'pw',
+      }), { status: 200 });
+    }
+    if (u.includes('/session/researcher')) {
+      return new Response(JSON.stringify({ sessionId: 'sess-1' }), { status: 200 });
+    }
+    if (u.includes('/session/sess-1')) {
+      const rawBody = isRequest ? await urlOrReq.text() : (init as any).body;
+      const body = JSON.parse(rawBody);
+      capturedPrompt = body.parts[0].text;
+      return new Response(JSON.stringify({
+        info: { tokens: { input: 10, output: 5 }, cost: 0.001 },
+        parts: [{ type: 'text', text: '{"gaps":[]}' }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    return new Response('not found', { status: 404 });
+  }) as any;
+
+  const text = await sendAgentPrompt({
+    runId: 'run-1',
+    personaKey: 'researcher',
+    personaText: 'You are a researcher.',
+    userPrompt: 'Find gaps.',
+  });
+
+  expect(text).toBe('{"gaps":[]}');
+  expect(capturedPrompt).toContain('ANALYSIS MODE');
+  expect(capturedPrompt).toContain('You are a researcher.');
+  expect(capturedPrompt).toContain('Find gaps.');
+  expect(capturedPrompt).toContain('valid JSON');
+});
+
+test('sendAgentPrompt throws when server is not running', async () => {
+  globalThis.fetch = mock(async () => new Response('{}', { status: 404 })) as any;
+  await expect(
+    sendAgentPrompt({ runId: 'no-server', personaKey: 'analyst', personaText: '', userPrompt: 'x' }),
+  ).rejects.toThrow(/HTTP 404/);
+});

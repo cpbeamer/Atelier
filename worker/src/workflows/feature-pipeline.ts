@@ -1,7 +1,7 @@
 // worker/src/workflows/feature-pipeline.ts
 import { proxyActivities, executeChild } from '@temporalio/workflow';
 import type * as activities from '../activities.ts';
-import type { AgentChildInput, agentChild } from './agent-child.ts';
+import type { agentChild } from './agent-child.ts';
 
 const { createMilestone } = proxyActivities<typeof activities>({
   startToCloseTimeout: '5 minutes',
@@ -27,14 +27,14 @@ export async function featurePipeline(input: PipelineInput): Promise<PipelineOut
     console.log('Phase 1: Starting parallel research...');
     currentPhase = 'research';
     const [researchA, researchB] = await Promise.all([
-      executeChild<AgentChildInput, string>('agentChild', {
+      executeChild<typeof agentChild>('agentChild', {
         args: [{
           agentName: 'Researcher A',
           persona: 'researcher-a',
           task: signal,
         }],
       }),
-      executeChild<AgentChildInput, string>('agentChild', {
+      executeChild<typeof agentChild>('agentChild', {
         args: [{
           agentName: 'Researcher B',
           persona: 'researcher-b',
@@ -47,7 +47,7 @@ export async function featurePipeline(input: PipelineInput): Promise<PipelineOut
     // Phase 2: Synthesis
     console.log('Phase 2: Starting synthesis...');
     currentPhase = 'synthesis';
-    const synthesis = await executeChild<AgentChildInput, string>('agentChild', {
+    const synthesis = await executeChild<typeof agentChild>('agentChild', {
       args: [{
         agentName: 'Synthesizer',
         persona: 'synthesizer',
@@ -69,7 +69,7 @@ export async function featurePipeline(input: PipelineInput): Promise<PipelineOut
     // Phase 4: Architecture
     console.log('Phase 4: Starting architecture...');
     currentPhase = 'architecture';
-    const design = await executeChild<AgentChildInput, string>('agentChild', {
+    const design = await executeChild<typeof agentChild>('agentChild', {
       args: [{
         agentName: 'Architect',
         persona: 'architect',
@@ -88,7 +88,7 @@ export async function featurePipeline(input: PipelineInput): Promise<PipelineOut
     // Phase 6: Implementation
     console.log('Phase 6: Starting code writing...');
     currentPhase = 'implementation';
-    const code = await executeChild<AgentChildInput, string>('agentChild', {
+    const code = await executeChild<typeof agentChild>('agentChild', {
       args: [{
         agentName: 'Code Writer',
         persona: 'code-writer',

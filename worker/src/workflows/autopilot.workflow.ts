@@ -20,6 +20,7 @@ const {
   startRunOpencode,
   stopRunOpencode,
   useOpencodeForRun,
+  bootstrapOpencodeWorktree,
 } = proxyActivities<typeof activities>({
   startToCloseTimeout: '30 minutes',
   // Retry on transient LLM/network failures. NonRetryableAgentError (thrown from
@@ -75,6 +76,7 @@ export async function autopilotWorkflow(input: AutopilotInput): Promise<Autopilo
 
   // If opencode is the chosen backend, start the per-run serve.
   if (await useOpencodeForRun()) {
+    await bootstrapOpencodeWorktree({ worktreePath });
     await startRunOpencode({ runId, worktreePath });
     opencodeStarted = true;
   }

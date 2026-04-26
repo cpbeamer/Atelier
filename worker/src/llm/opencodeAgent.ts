@@ -8,7 +8,7 @@
 // the SDK (`sendDeveloperPrompt`) and forward token usage + cost to the
 // `/api/agent/call` telemetry endpoint.
 
-import { writeOpencodeConfig, writeAgentsRules } from './opencodeConfig';
+import { writeAgentsRules } from './opencodeConfig';
 import { sendDeveloperPrompt } from './opencodeServeClient';
 import { recordCall } from './telemetry';
 import type { PrimaryProvider } from './callLLM';
@@ -118,11 +118,9 @@ export async function runOpenCodeAgent(input: OpenCodeRunInput): Promise<OpenCod
   // opencode commits as part of its workflow.
   const baseSha = await snapshotHead(worktreePath);
 
-  // Write opencode.json + AGENTS.md fresh per run. backend/src/opencode/
-  // bootstrap.ts:bootstrapWorktree exists but has no callers in the workflow
-  // path — the per-run serve relies on whatever exists in the worktree at
-  // startup, so we are the sole writer here.
-  await writeOpencodeConfig(worktreePath, primaryProvider);
+  // Write AGENTS.md fresh per run so opencode picks up the developer persona
+  // as system instructions. opencode.json is written by bootstrapOpencodeWorktree
+  // in Phase 0 before the server starts — do not write it here.
   await writeAgentsRules(worktreePath, developerPersona);
 
   const taskPrompt = buildTaskPrompt(input);
