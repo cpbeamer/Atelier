@@ -1143,10 +1143,40 @@ Rules:
 export async function reviewCode(input: ReviewInput & { worktreePath?: string }): Promise<ReviewResult> {
   const { implementation, ticket, worktreePath, agentId, runId } = input;
 
-  // reviewer-correctness now narrowly owns "does the code meet acceptance
-  // criteria?" The full 4-specialist panel lives in reviewCodePanel.
   const persona = await loadPersona(process.cwd(), 'reviewer-correctness');
 
+  if (await useOpencode()) {
+    const promptBody = `
+Review the changes for ticket: ${ticket.title}
+${ticket.description}
+
+ACCEPTANCE CRITERIA:
+${ticket.acceptanceCriteria.map((c) => `- ${c}`).join('\n')}
+
+FILES CHANGED: ${implementation.filesChanged.join(', ')}
+
+Use your read tools to inspect the files listed above.
+Respond with ONLY a JSON object: { "approved": true|false, "comments": ["specific, actionable comment", ...] }
+`;
+    const text = await sendAgentPrompt({
+      runId: runId ?? '',
+      personaKey: agentId ?? 'reviewer-correctness',
+      personaText: persona,
+      userPrompt: promptBody,
+    });
+    return await withJsonRetry<ReviewResult>(
+      () => Promise.resolve(stripThinking(text)),
+      {
+        maxAttempts: 1,
+        validate: (v): v is ReviewResult =>
+          typeof v === 'object' && v !== null
+          && typeof (v as any).approved === 'boolean'
+          && Array.isArray((v as any).comments),
+      },
+    );
+  }
+
+  // Legacy path: pre-fetch file contents, then callLLM.
   const fileContents = worktreePath && implementation.filesChanged.length > 0
     ? await readFilesForContext(worktreePath, implementation.filesChanged)
     : '(no files to read)';
@@ -1194,6 +1224,101 @@ export async function reviewCodePanel(input: PanelReviewInput): Promise<PanelRev
 
   const panelPrompts = await loadPanel(process.cwd(), 'reviewer', REVIEWER_SPECIALISTS);
 
+  if (await useOpencode()) {
+    const sharedPromptBody = `
+Ticket: ${ticket.title}
+${ticket.description}
+
+ACCEPTANCE CRITERIA:
+${ticket.acceptanceCriteria.map((c) => `- ${c}`).join('\n')}
+
+FILES CHANGED: ${implementation.filesChanged.join(', ')}
+
+Use your read tools to inspect the changed files. Evaluate strictly within your specialist scope. Respond with JSON only.
+`;
+
+    const verdicts = await Promise.all(
+      REVIEWER_SPECIALISTS.map(async (specialist) => {
+        const agentId = `reviewer-${specialist}`;
+        await notifyAgentStart({ agentId, agentName: `Reviewer (${specialist})`, terminalType: 'direct-llm' });
+        try {
+          const text = await sendAgentPrompt({
+            runId,
+            personaKey: agentId,
+            personaText: panelPrompts[specialist],
+            userPrompt: sharedPromptBody,
+          });
+          const verdict = await withJsonRetry<Record<string, unknown>>(
+            () => Promise.resolve(text),
+            {
+              maxAttempts: 1,
+              validate: (v) => typeof v === 'object' && v !== null && 'approved' in (v as object),
+            },
+          );
+          await notifyAgentComplete({ agentId, status: 'completed', output: JSON.stringify(verdict).slice(0, 500) });
+          return [specialist, verdict] as const;
+        } catch (e) {
+          await notifyAgentComplete({ agentId, status: 'error', output: String(e).slice(0, 500) });
+          return [specialist, { approved: false, error: String(e) }] as const;
+        }
+      }),
+    );
+    const rawVerdicts = Object.fromEntries(verdicts) as Record<ReviewerSpecialist, Record<string, unknown>>;
+
+    const synthPersona = await loadPersona(process.cwd(), 'reviewer-synthesizer');
+    const synthAgentId = 'reviewer-synthesizer';
+    await notifyAgentStart({ agentId: synthAgentId, agentName: 'Reviewer Synthesizer', terminalType: 'direct-llm' });
+    type Synth = { approved: boolean; blockers: Array<{ from?: string; detail?: string } | string>; advisories: Array<{ from?: string; detail?: string } | string>; summary: string };
+    try {
+      const synthText = await sendAgentPrompt({
+        runId,
+        personaKey: synthAgentId,
+        personaText: synthPersona,
+        userPrompt: `Panel verdicts:\n${JSON.stringify(rawVerdicts, null, 2)}`,
+      });
+      const synth = await withJsonRetry<Synth>(
+        () => Promise.resolve(synthText),
+        {
+          maxAttempts: 1,
+          validate: (v) =>
+            typeof v === 'object' && v !== null
+            && typeof (v as any).approved === 'boolean'
+            && Array.isArray((v as any).blockers)
+            && Array.isArray((v as any).advisories),
+        },
+      );
+      await notifyAgentComplete({ agentId: synthAgentId, status: 'completed', output: JSON.stringify(synth).slice(0, 500) });
+      const normalize = (e: { from?: string; detail?: string } | string, fallbackFrom: string) =>
+        typeof e === 'string' ? { from: fallbackFrom, detail: e } : { from: e.from ?? fallbackFrom, detail: e.detail ?? '' };
+      return {
+        approved: synth.approved,
+        blockers: (synth.blockers ?? []).map((b) => normalize(b, synthAgentId)),
+        advisories: (synth.advisories ?? []).map((a) => normalize(a, synthAgentId)),
+        comments: [
+          ...(synth.blockers ?? []).map((b) => normalize(b, synthAgentId).detail),
+          ...(synth.advisories ?? []).map((a) => normalize(a, synthAgentId).detail),
+        ],
+        summary: synth.summary ?? '',
+      };
+    } catch {
+      await notifyAgentComplete({ agentId: synthAgentId, status: 'error', output: 'synthesis failed' });
+      const allApproved = Object.values(rawVerdicts).every((v) => (v as any).approved === true);
+      const allComments = Object.entries(rawVerdicts).flatMap(([from, v]) =>
+        Array.isArray((v as any).comments)
+          ? (v as any).comments.map((c: string) => ({ from, detail: c }))
+          : [],
+      );
+      return {
+        approved: allApproved,
+        blockers: allApproved ? [] : allComments,
+        advisories: allApproved ? allComments : [],
+        comments: allComments.map((c) => c.detail),
+        summary: '',
+      };
+    }
+  }
+
+  // Legacy path continues unchanged below...
   const fileContents = worktreePath && implementation.filesChanged.length > 0
     ? await readFilesForContext(worktreePath, implementation.filesChanged)
     : '(no files to read)';
