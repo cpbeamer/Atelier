@@ -201,6 +201,7 @@ import { runVerify } from './verify.js';
 import { loadPersona, loadPanel } from './personaLoader.js';
 import { runOpenCodeAgent } from './llm/opencodeAgent.js';
 import { useOpencode } from './llm/featureFlags.js';
+import { sendAgentPrompt } from './llm/opencodeServeClient.js';
 import { writeOpencodeConfig } from './llm/opencodeConfig.js';
 
 async function readFile(filePath: string): Promise<string> {
@@ -423,10 +424,63 @@ export async function researchRepo(input: ResearchInput): Promise<ResearchOutput
 
   const { baseContext } = await gatherRepoContext(projectPath);
   const history = await gitHistorySummary(projectPath);
-  const panel = await loadPanel(process.cwd(), 'researcher', RESEARCHER_SPECIALISTS);
 
-  // Fan out — each specialist gets the shared base context plus any specialist-
-  // specific extra context (git history for the history specialist).
+  if (await useOpencode()) {
+    const panel = await loadPanel(process.cwd(), 'researcher', RESEARCHER_SPECIALISTS);
+    const fragments = await Promise.all(RESEARCHER_SPECIALISTS.map(async (specialist) => {
+      const agentId = `researcher-${specialist}`;
+      await notifyAgentStart({ agentId, agentName: `Researcher (${specialist})`, terminalType: 'direct-llm' });
+      const extra = specialist === 'history'
+        ? `\n\n## Recent git history (subject lines, last 90 days)\n${history || '(no git history)'}`
+        : '';
+      try {
+        const text = await sendAgentPrompt({
+          runId,
+          personaKey: agentId,
+          personaText: panel[specialist],
+          userPrompt: `${baseContext}${extra}`,
+        });
+        const out = await withJsonRetry<Record<string, unknown>>(
+          () => Promise.resolve(text),
+          { maxAttempts: 1, validate: (v) => typeof v === 'object' && v !== null },
+        );
+        await notifyAgentComplete({ agentId, status: 'completed', output: JSON.stringify(out).slice(0, 500) });
+        return [specialist, out] as const;
+      } catch (e) {
+        await notifyAgentComplete({ agentId, status: 'error', output: String(e).slice(0, 500) });
+        return [specialist, { error: String(e) }] as const;
+      }
+    }));
+
+    const specialistFindings = Object.fromEntries(fragments) as Record<ResearcherSpecialist, Record<string, unknown>>;
+    const synthPersona = await loadPersona(process.cwd(), 'researcher-synthesizer');
+    const synthPrompt = `User context: ${JSON.stringify(userContext)}\n\nSpecialist findings:\n${JSON.stringify(specialistFindings, null, 2)}`;
+    try {
+      const synthText = await sendAgentPrompt({
+        runId,
+        personaKey: 'researcher-synthesizer',
+        personaText: synthPersona,
+        userPrompt: synthPrompt,
+      });
+      return await withJsonRetry<ResearchOutput>(
+        () => Promise.resolve(synthText),
+        {
+          maxAttempts: 1,
+          validate: (v): v is ResearchOutput =>
+            typeof v === 'object' && v !== null
+            && typeof (v as any).repoStructure === 'string'
+            && Array.isArray((v as any).currentFeatures)
+            && Array.isArray((v as any).gaps)
+            && Array.isArray((v as any).opportunities),
+        },
+      );
+    } catch {
+      return fallbackSynthesizeResearch(specialistFindings, baseContext);
+    }
+  }
+
+  // Legacy path: pre-fetched context, callLLM per specialist.
+  const panel = await loadPanel(process.cwd(), 'researcher', RESEARCHER_SPECIALISTS);
   const fragments = await Promise.all(RESEARCHER_SPECIALISTS.map(async (specialist) => {
     const agentId = `researcher-${specialist}`;
     await notifyAgentStart({ agentId, agentName: `Researcher (${specialist})`, terminalType: 'direct-llm' });
@@ -452,8 +506,6 @@ export async function researchRepo(input: ResearchInput): Promise<ResearchOutput
   }));
 
   const specialistFindings = Object.fromEntries(fragments) as Record<ResearcherSpecialist, Record<string, unknown>>;
-
-  // Synthesize into the canonical ResearchOutput shape.
   const synthPersona = await loadPersona(process.cwd(), 'researcher-synthesizer');
   const synthPrompt = `User context: ${JSON.stringify(userContext)}\n\nSpecialist findings:\n${JSON.stringify(specialistFindings, null, 2)}`;
 
@@ -475,8 +527,6 @@ export async function researchRepo(input: ResearchInput): Promise<ResearchOutput
       },
     );
   } catch {
-    // Synthesizer failed — fall back to a deterministic merge of whatever the
-    // specialists produced, so the pipeline can still proceed.
     return fallbackSynthesizeResearch(specialistFindings, baseContext);
   }
 }
