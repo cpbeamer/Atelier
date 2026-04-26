@@ -596,9 +596,6 @@ ${featuresToDebate.map((f, i) => `${i + 1}. ${f}`).join('\n')}
 For EACH feature, provide your specialist-scoped assessment in the JSON shape your persona specifies.
 `;
 
-  // Fan out to all 6 specialists in parallel. signal/noise keep their existing
-  // agentIds (so prior UI panels still light up); the new specialists stream
-  // into their own 'debate-<name>' panes.
   const specialistAgentIds: Record<DebateSpecialist, string> = {
     signal: agentIds?.signal ?? 'debate-signal',
     noise: agentIds?.noise ?? 'debate-noise',
@@ -608,57 +605,102 @@ For EACH feature, provide your specialist-scoped assessment in the JSON shape yo
     maintainability: 'debate-maintainability',
   };
 
-  const assessments = await Promise.all(DEBATE_SPECIALISTS.map(async (specialist) => {
-    const sAgentId = specialistAgentIds[specialist];
-    // signal/noise already get notifyAgentStart from the workflow. New
-    // specialists need their own since the workflow doesn't know about them.
-    const isNew = specialist !== 'signal' && specialist !== 'noise';
-    if (isNew) {
-      await notifyAgentStart({ agentId: sAgentId, agentName: `Debate (${specialist})`, terminalType: 'direct-llm' });
-    }
-    try {
-      const out = await withJsonRetry<Record<string, unknown>>(
-        (suffix) => callLLM(panel[specialist], `${debatePrompt}${suffix ?? ''}`, {
-          agentId: sAgentId, runId,
-        }),
-        {
-          maxAttempts: 2,
-          validate: (v) => typeof v === 'object' && v !== null && 'assessments' in (v as object),
-        },
-      );
+  if (await useOpencode()) {
+    const assessments = await Promise.all(DEBATE_SPECIALISTS.map(async (specialist) => {
+      const sAgentId = specialistAgentIds[specialist];
+      const isNew = specialist !== 'signal' && specialist !== 'noise';
       if (isNew) {
-        await notifyAgentComplete({ agentId: sAgentId, status: 'completed', output: JSON.stringify(out).slice(0, 500) });
+        await notifyAgentStart({ agentId: sAgentId, agentName: `Debate (${specialist})`, terminalType: 'direct-llm' });
       }
-      return [specialist, out] as const;
-    } catch (e) {
+      try {
+        const text = await sendAgentPrompt({
+          runId,
+          personaKey: sAgentId,
+          personaText: panel[specialist],
+          userPrompt: debatePrompt,
+        });
+        const out = await withJsonRetry<Record<string, unknown>>(
+          () => Promise.resolve(text),
+          {
+            maxAttempts: 1,
+            validate: (v) => typeof v === 'object' && v !== null && 'assessments' in (v as object),
+          },
+        );
+        if (isNew) await notifyAgentComplete({ agentId: sAgentId, status: 'completed', output: JSON.stringify(out).slice(0, 500) });
+        return [specialist, out] as const;
+      } catch (e) {
+        if (isNew) await notifyAgentComplete({ agentId: sAgentId, status: 'error', output: String(e).slice(0, 500) });
+        return [specialist, { error: String(e), assessments: [] }] as const;
+      }
+    }));
+    const assessmentMap = Object.fromEntries(assessments) as Record<DebateSpecialist, Record<string, unknown>>;
+
+    const reconcilerPersona = await loadPersona(process.cwd(), 'debate-reconciler');
+    const reconcilePrompt = `Repo: ${repoAnalysis.repoStructure}\n\nFeatures assessed:\n${featuresToDebate.map((f, i) => `${i + 1}. ${f}`).join('\n')}\n\nSpecialist assessments:\n${JSON.stringify(assessmentMap, null, 2)}`;
+
+    const reconcileText = await sendAgentPrompt({
+      runId,
+      personaKey: agentIds?.reconcile ?? agentIds?.signal ?? 'debate-reconciler',
+      personaText: reconcilerPersona,
+      userPrompt: reconcilePrompt,
+    });
+    return await withJsonRetry<DebateOutput>(
+      () => Promise.resolve(reconcileText),
+      {
+        maxAttempts: 1,
+        validate: (v): v is DebateOutput =>
+          typeof v === 'object' && v !== null
+          && Array.isArray((v as any).approvedFeatures)
+          && Array.isArray((v as any).rejectedFeatures),
+      },
+    );
+  } else {
+    // Legacy path: callLLM per specialist.
+    const assessments = await Promise.all(DEBATE_SPECIALISTS.map(async (specialist) => {
+      const sAgentId = specialistAgentIds[specialist];
+      // signal/noise already get notifyAgentStart from the workflow. New
+      // specialists need their own since the workflow doesn't know about them.
+      const isNew = specialist !== 'signal' && specialist !== 'noise';
       if (isNew) {
-        await notifyAgentComplete({ agentId: sAgentId, status: 'error', output: String(e).slice(0, 500) });
+        await notifyAgentStart({ agentId: sAgentId, agentName: `Debate (${specialist})`, terminalType: 'direct-llm' });
       }
-      return [specialist, { error: String(e), assessments: [] }] as const;
-    }
-  }));
+      try {
+        const out = await withJsonRetry<Record<string, unknown>>(
+          (suffix) => callLLM(panel[specialist], `${debatePrompt}${suffix ?? ''}`, {
+            agentId: sAgentId, runId,
+          }),
+          {
+            maxAttempts: 2,
+            validate: (v) => typeof v === 'object' && v !== null && 'assessments' in (v as object),
+          },
+        );
+        if (isNew) await notifyAgentComplete({ agentId: sAgentId, status: 'completed', output: JSON.stringify(out).slice(0, 500) });
+        return [specialist, out] as const;
+      } catch (e) {
+        if (isNew) await notifyAgentComplete({ agentId: sAgentId, status: 'error', output: String(e).slice(0, 500) });
+        return [specialist, { error: String(e), assessments: [] }] as const;
+      }
+    }));
 
-  const assessmentMap = Object.fromEntries(assessments) as Record<DebateSpecialist, Record<string, unknown>>;
+    const assessmentMap = Object.fromEntries(assessments) as Record<DebateSpecialist, Record<string, unknown>>;
+    const reconcilerPersona = await loadPersona(process.cwd(), 'debate-reconciler');
+    const reconcilePrompt = `Repo: ${repoAnalysis.repoStructure}\n\nFeatures assessed:\n${featuresToDebate.map((f, i) => `${i + 1}. ${f}`).join('\n')}\n\nSpecialist assessments:\n${JSON.stringify(assessmentMap, null, 2)}`;
 
-  // Reconcile — a 7th LLM call that weighs the six lenses into a single
-  // approve/reject list. Streams into the reconcile/signal pane for continuity.
-  const reconcilerPersona = await loadPersona(process.cwd(), 'debate-reconciler');
-  const reconcilePrompt = `Repo: ${repoAnalysis.repoStructure}\n\nFeatures assessed:\n${featuresToDebate.map((f, i) => `${i + 1}. ${f}`).join('\n')}\n\nSpecialist assessments:\n${JSON.stringify(assessmentMap, null, 2)}`;
-
-  return await withJsonRetry<DebateOutput>(
-    (suffix) => callLLM(
-      reconcilerPersona,
-      `${reconcilePrompt}${suffix ?? ''}`,
-      { agentId: agentIds?.reconcile ?? agentIds?.signal ?? 'debate-reconciler', runId },
-    ),
-    {
-      maxAttempts: 3,
-      validate: (v): v is DebateOutput =>
-        typeof v === 'object' && v !== null
-        && Array.isArray((v as any).approvedFeatures)
-        && Array.isArray((v as any).rejectedFeatures),
-    },
-  );
+    return await withJsonRetry<DebateOutput>(
+      (suffix) => callLLM(
+        reconcilerPersona,
+        `${reconcilePrompt}${suffix ?? ''}`,
+        { agentId: agentIds?.reconcile ?? agentIds?.signal ?? 'debate-reconciler', runId },
+      ),
+      {
+        maxAttempts: 3,
+        validate: (v): v is DebateOutput =>
+          typeof v === 'object' && v !== null
+          && Array.isArray((v as any).approvedFeatures)
+          && Array.isArray((v as any).rejectedFeatures),
+      },
+    );
+  }
 }
 
 export async function generateTickets(input: TicketsInput): Promise<TicketsOutput> {
