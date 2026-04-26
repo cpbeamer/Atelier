@@ -200,6 +200,7 @@ import { NonRetryableAgentError } from './errors.js';
 import { runVerify } from './verify.js';
 import { loadPersona, loadPanel } from './personaLoader.js';
 import { runOpenCodeAgent } from './llm/opencodeAgent.js';
+import { useOpencode } from './llm/featureFlags.js';
 
 async function readFile(filePath: string): Promise<string> {
   return fs.promises.readFile(filePath, 'utf-8');
@@ -766,7 +767,7 @@ export async function implementCode(input: ImplementInput): Promise<ImplementOut
   // agent has Read/Edit/Bash/Grep tools so it iterates against actual repo
   // state instead of dictating BEGIN FILE blocks blind. Gated behind a flag
   // until smoke-tested across more tickets.
-  if (process.env.ATELIER_USE_OPENCODE === '1') {
+  if (await useOpencode()) {
     const provider = await getPrimaryProvider();
     const apiKey = await getApiKey(provider.id, provider.kind);
     const run = await runOpenCodeAgent({
@@ -864,7 +865,7 @@ export async function implementCodeBestOfN(
   // candidates would race on the worktree's git index and require per-ticket
   // sub-worktrees to land safely. Defer that machinery; for now a single
   // well-resourced opencode run replaces N brittle one-shot candidates.
-  if (process.env.ATELIER_USE_OPENCODE === '1') {
+  if (await useOpencode()) {
     return implementCode(input);
   }
 
