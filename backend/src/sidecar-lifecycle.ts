@@ -69,7 +69,7 @@ async function waitForHealth(timeout = 30000): Promise<void> {
 
 function healthCheck(): Promise<void> {
   return new Promise((resolve, reject) => {
-    const req = http.get('http://127.0.0.1:7467/health', (res) => {
+    const req = http.get('http://127.0.0.1:7467/api/v1/namespaces', (res) => {
       if (res.statusCode === 200) resolve();
       else reject(new Error(`Health check failed: ${res.statusCode}`));
     });
