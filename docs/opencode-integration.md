@@ -18,11 +18,13 @@ opencode --version
 
 The worker probes `opencode --version` at boot. If it's not on PATH, the worker logs a warning and the autopilot falls back to the legacy direct-LLM path — nothing breaks.
 
+The autopilot workflow now starts a per-run `opencode serve` subprocess at the top of each run when the toggle is on (managed by `backend/src/opencode/lifecycle.ts`), and the developer activity sends prompts to the run's session via `@opencode-ai/sdk`. The serve subprocess is stopped in the workflow's `finally` block on every exit path.
+
 ## Enable
 
-Set `ATELIER_USE_OPENCODE=1` in the worker's environment to route the implementer through opencode. Unset (or `=0`) to revert to the legacy `callLLM` + `BEGIN FILE / END FILE` parsing path. Both paths coexist for v1.
+Open Settings (gear icon in the sidebar) and toggle "Use opencode for the developer agent". The setting persists across restarts.
 
-A settings-UI toggle is planned but not yet wired (Task 9 of the transition plan); for now, configure via env var on the worker.
+For headless / standalone-worker development, set `ATELIER_USE_OPENCODE=1` in the worker's environment as a fallback. The worker resolves the flag from the backend first; if the backend is unreachable, it consults the env var.
 
 ## Provider configuration
 
@@ -57,9 +59,7 @@ The API key is resolved from keytar / settings and passed to the opencode subpro
 
 ## Tradeoffs
 
-- **Telemetry under-reports the implementer.** Direct `callLLM` calls (researcher panel, debate, architect, reviewer panel, judge, verifier) all flow per-call token + cost rows into the `agent_calls` table. opencode runs don't — the `runOpenCodeAgent` subprocess holds its own session DB and emits to its own `opencode stats`, so when `ATELIER_USE_OPENCODE=1` the cost-by-agent panel for the `developer` row will be empty (or stale from previous direct-LLM runs). Aggregate `workflow_runs.total_tokens` is similarly under-reported by the implementer's share.
-
-  The right fix is to switch to `opencode serve` + `@opencode-ai/sdk` and forward usage events into `/api/agent/call` from there. That adds a long-running opencode daemon to manage; v1 lives without it.
+- **Telemetry now forwards developer usage.** When the developer runs through the per-run `opencode serve`, the SDK returns input/output token counts on each turn. Those rows land in `agent_calls` with `kind = 'opencode'` and the `developer` agent id, so the cost-by-agent panel reflects developer spend. The SDK's `costUsd` is recorded as-is when present; when it's zero (some providers don't report cost), the run will show `total_cost_usd = 0` for the developer rows but `total_tokens` is still accurate.
 
 - **AGENTS.md collision.** opencode reads `AGENTS.md` at the project root for system instructions. `writeAgentsRules` only writes ours if the worktree doesn't already have one — if the user's project ships its own `AGENTS.md`, theirs wins, since their instructions are more authoritative than our scoped persona. The trade is that custom developer personas living in `worker/src/.atelier/agents/developer.md` are silently ignored on those projects; that's the right call but worth knowing when debugging "why isn't my persona being applied?"
 
