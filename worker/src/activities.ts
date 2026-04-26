@@ -727,6 +727,26 @@ For each feature, generate a ticket with:
 Respond ONLY with valid JSON array of tickets.
 `;
 
+  if (await useOpencode()) {
+    const text = await sendAgentPrompt({
+      runId: runId ?? '',
+      personaKey: agentId ?? 'ticket-bot',
+      personaText: persona,
+      userPrompt: prompt,
+    });
+    const tickets = await withJsonRetry<Ticket[]>(
+      () => Promise.resolve(text),
+      {
+        maxAttempts: 1,
+        validate: (v): v is Ticket[] =>
+          Array.isArray(v)
+          && v.every((t) => typeof t === 'object' && t !== null && 'id' in t && 'title' in t && 'acceptanceCriteria' in t),
+      },
+    );
+    return { tickets };
+  }
+
+  // Legacy path.
   const tickets = await withJsonRetry<Ticket[]>(
     (suffix) => callLLM(persona, `${prompt}${suffix ?? ''}`, { agentId, runId }),
     {
@@ -772,10 +792,48 @@ Be specific. Generic plans are useless. Respond with ONLY a JSON array, one entr
     complexity?: 'low' | 'medium' | 'high';
   };
 
-  // Best-of-3 with a judge. Three parallel architects at spread temperatures
-  // produce candidate plans; a judge picks/synthesizes the best. On a small
-  // repo with cheap tokens (MiniMax M2.7) this buys real accuracy at trivial
-  // cost — the whole phase fans out + joins in the time of one sequential call.
+  if (await useOpencode()) {
+    const architectAgentId = agentId ?? 'architect';
+    await notifyAgentStart({
+      agentId: architectAgentId,
+      agentName: 'Architect',
+      terminalType: 'direct-llm',
+    });
+    try {
+      const text = await sendAgentPrompt({
+        runId: runId ?? '',
+        personaKey: architectAgentId,
+        personaText: persona,
+        userPrompt: prompt,
+      });
+      const chosen = await withJsonRetry<ArchitectEntry[]>(
+        () => Promise.resolve(text),
+        {
+          maxAttempts: 1,
+          validate: (v) => Array.isArray(v) && v.length === tickets.length,
+        },
+      );
+      await notifyAgentComplete({
+        agentId: architectAgentId,
+        status: 'completed',
+        output: JSON.stringify(chosen).slice(0, 500),
+      });
+      return {
+        scopedTickets: tickets.map((t, i) => ({
+          ...t,
+          technicalPlan: chosen[i]?.technicalPlan || 'Plan pending',
+          filesToChange: chosen[i]?.filesToChange ?? [],
+          dependencies: chosen[i]?.dependencies ?? [],
+          complexity: chosen[i]?.complexity ?? 'medium',
+        })),
+      };
+    } catch (e) {
+      await notifyAgentComplete({ agentId: architectAgentId, status: 'error', output: String(e).slice(0, 500) });
+      throw e;
+    }
+  }
+
+  // Legacy path: best-of-3 parallel blind LLM calls with a judge.
   const candidateTemps = [0.2, 0.6, 0.9] as const;
   const candidates = await Promise.all(candidateTemps.map(async (temperature, idx) => {
     const subAgentId = `architect-${idx + 1}`;
