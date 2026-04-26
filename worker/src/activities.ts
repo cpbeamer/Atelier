@@ -435,7 +435,7 @@ export async function researchRepo(input: ResearchInput): Promise<ResearchOutput
         : '';
       try {
         const text = await sendAgentPrompt({
-          runId,
+          runId: runId ?? '',
           personaKey: agentId,
           personaText: panel[specialist],
           userPrompt: `${baseContext}${extra}`,
@@ -457,7 +457,7 @@ export async function researchRepo(input: ResearchInput): Promise<ResearchOutput
     const synthPrompt = `User context: ${JSON.stringify(userContext)}\n\nSpecialist findings:\n${JSON.stringify(specialistFindings, null, 2)}`;
     try {
       const synthText = await sendAgentPrompt({
-        runId,
+        runId: runId ?? '',
         personaKey: 'researcher-synthesizer',
         personaText: synthPersona,
         userPrompt: synthPrompt,
@@ -614,7 +614,7 @@ For EACH feature, provide your specialist-scoped assessment in the JSON shape yo
       }
       try {
         const text = await sendAgentPrompt({
-          runId,
+          runId: runId ?? '',
           personaKey: sAgentId,
           personaText: panel[specialist],
           userPrompt: debatePrompt,
@@ -639,7 +639,7 @@ For EACH feature, provide your specialist-scoped assessment in the JSON shape yo
     const reconcilePrompt = `Repo: ${repoAnalysis.repoStructure}\n\nFeatures assessed:\n${featuresToDebate.map((f, i) => `${i + 1}. ${f}`).join('\n')}\n\nSpecialist assessments:\n${JSON.stringify(assessmentMap, null, 2)}`;
 
     const reconcileText = await sendAgentPrompt({
-      runId,
+      runId: runId ?? '',
       personaKey: agentIds?.reconcile ?? agentIds?.signal ?? 'debate-reconciler',
       personaText: reconcilerPersona,
       userPrompt: reconcilePrompt,
@@ -1243,7 +1243,7 @@ Use your read tools to inspect the changed files. Evaluate strictly within your 
         await notifyAgentStart({ agentId, agentName: `Reviewer (${specialist})`, terminalType: 'direct-llm' });
         try {
           const text = await sendAgentPrompt({
-            runId,
+            runId: runId ?? '',
             personaKey: agentId,
             personaText: panelPrompts[specialist],
             userPrompt: sharedPromptBody,
@@ -1271,7 +1271,7 @@ Use your read tools to inspect the changed files. Evaluate strictly within your 
     type Synth = { approved: boolean; blockers: Array<{ from?: string; detail?: string } | string>; advisories: Array<{ from?: string; detail?: string } | string>; summary: string };
     try {
       const synthText = await sendAgentPrompt({
-        runId,
+        runId: runId ?? '',
         personaKey: synthAgentId,
         personaText: synthPersona,
         userPrompt: `Panel verdicts:\n${JSON.stringify(rawVerdicts, null, 2)}`,
@@ -1299,6 +1299,7 @@ Use your read tools to inspect the changed files. Evaluate strictly within your 
           ...(synth.advisories ?? []).map((a) => normalize(a, synthAgentId).detail),
         ],
         summary: synth.summary ?? '',
+        rawVerdicts,
       };
     } catch {
       await notifyAgentComplete({ agentId: synthAgentId, status: 'error', output: 'synthesis failed' });
@@ -1314,6 +1315,7 @@ Use your read tools to inspect the changed files. Evaluate strictly within your 
         advisories: allApproved ? allComments : [],
         comments: allComments.map((c) => c.detail),
         summary: '',
+        rawVerdicts,
       };
     }
   }

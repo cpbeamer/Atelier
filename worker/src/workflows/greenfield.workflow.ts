@@ -1,6 +1,7 @@
 // worker/src/workflows/greenfield.workflow.ts
 import { proxyActivities } from '@temporalio/workflow';
 import type * as activities from '../activities.js';
+import type { Implementation } from '../activities.js';
 
 const {
   generateTickets,
@@ -37,14 +38,21 @@ export async function greenfieldWorkflow(input: GreenfieldInput): Promise<any> {
 
   // Scope tickets
   await notifyAgentStart({ agentId: 'architect', agentName: 'Architect', terminalType: 'terminal' });
-  const scopedTickets = await scopeArchitecture({ tickets, projectPath, worktreePath, agentId: 'architect' });
+  const scopeResult = await scopeArchitecture({ tickets, projectPath, worktreePath, agentId: 'architect' });
+  const scopedTickets = scopeResult.scopedTickets;
   await notifyAgentComplete({ agentId: 'architect', status: 'completed' });
 
   // Implement → Review (3x) → Test (3x) per ticket
   for (const ticket of scopedTickets) {
     await notifyAgentStart({ agentId: 'developer', agentName: 'Developer', terminalType: 'terminal' });
-    const implementation = await implementCode({ ticket, worktreePath, projectPath, agentId: 'developer' });
+    const implResult = await implementCode({ ticket, worktreePath, projectPath, agentId: 'developer' });
     await notifyAgentComplete({ agentId: 'developer', status: 'completed' });
+
+    const implementation: Implementation = {
+      ticketId: ticket.id,
+      code: implResult.code,
+      filesChanged: implResult.filesChanged,
+    };
 
     // Review loop
     let reviewApproved = false;
@@ -57,6 +65,7 @@ export async function greenfieldWorkflow(input: GreenfieldInput): Promise<any> {
       } else {
         const revised = await implementCode({ ticket, worktreePath, projectPath, feedback: result.comments, agentId: 'developer' });
         implementation.code = revised.code;
+        implementation.filesChanged = revised.filesChanged;
       }
     }
     if (!reviewApproved) return { status: 'stalled', error: `Review loop exceeded for ${ticket.id}` };
@@ -72,6 +81,7 @@ export async function greenfieldWorkflow(input: GreenfieldInput): Promise<any> {
       } else {
         const fixed = await implementCode({ ticket, worktreePath, projectPath, testFeedback: result.failures, agentId: 'developer' });
         implementation.code = fixed.code;
+        implementation.filesChanged = fixed.filesChanged;
       }
     }
     if (!testsPassed) return { status: 'stalled', error: `Test loop exceeded for ${ticket.id}` };
