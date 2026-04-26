@@ -201,6 +201,7 @@ import { runVerify } from './verify.js';
 import { loadPersona, loadPanel } from './personaLoader.js';
 import { runOpenCodeAgent } from './llm/opencodeAgent.js';
 import { useOpencode } from './llm/featureFlags.js';
+import { writeOpencodeConfig } from './llm/opencodeConfig.js';
 
 async function readFile(filePath: string): Promise<string> {
   return fs.promises.readFile(filePath, 'utf-8');
@@ -1494,4 +1495,9 @@ export async function stopRunOpencode(input: { runId: string }): Promise<void> {
 // flag resolver as an activity so the workflow can branch on it.
 export async function useOpencodeForRun(): Promise<boolean> {
   return useOpencode();
+}
+
+export async function bootstrapOpencodeWorktree(input: { worktreePath: string }): Promise<void> {
+  const provider = await getPrimaryProvider();
+  await writeOpencodeConfig(input.worktreePath, provider);
 }
