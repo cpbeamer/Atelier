@@ -6,6 +6,7 @@ import { ptyManager } from './pty-manager.js';
 import { agentStreamManager, type AgentEvent } from './agent-stream.js';
 import { startSidecar, stopSidecar } from './sidecar-lifecycle.js';
 import { milestones, modelConfig, agentCalls, type AgentCallRecord } from './db.js';
+import { appSettings } from './app-settings.js';
 import { loadProjectContext, saveProjectContext } from './project-context.js';
 import './ipc-handlers.js';
 
@@ -515,6 +516,42 @@ const httpServer = http.createServer(async (req, res) => {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: String(err) }));
     }
+    return;
+  }
+
+  // GET /api/settings/useOpencode — returns { useOpencode: boolean }
+  if (req.method === 'GET' && url.pathname === '/api/settings/useOpencode') {
+    try {
+      const value = appSettings.getBool('useOpencode', false);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ useOpencode: value }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: String(err) }));
+    }
+    return;
+  }
+
+  // POST /api/settings/useOpencode — body { useOpencode: boolean }
+  if (req.method === 'POST' && url.pathname === '/api/settings/useOpencode') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const parsed = JSON.parse(body) as { useOpencode?: unknown };
+        if (typeof parsed.useOpencode !== 'boolean') {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'body must be { useOpencode: boolean }' }));
+          return;
+        }
+        appSettings.set('useOpencode', parsed.useOpencode ? 'true' : 'false');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, useOpencode: parsed.useOpencode }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+    });
     return;
   }
 
