@@ -10,6 +10,7 @@
 
 import { writeOpencodeConfig, writeAgentsRules } from './opencodeConfig';
 import { sendDeveloperPrompt } from './opencodeServeClient';
+import { recordCall } from './telemetry';
 import type { PrimaryProvider } from './callLLM';
 import type { ScopedTicket } from '../activities';
 
@@ -110,35 +111,6 @@ function extractSummary(outputTail: string): string {
   return outputTail.slice(-500).trim();
 }
 
-const TELEMETRY_BACKEND = process.env.ATELIER_BACKEND_URL || 'http://localhost:3001';
-
-async function recordOpencodeCall(row: {
-  runId: string; agentId: string; providerId: string; model: string;
-  promptTokens: number; completionTokens: number; costUsd: number;
-  durationMs: number; startedAt: number; completedAt: number;
-}): Promise<void> {
-  try {
-    await fetch(`${TELEMETRY_BACKEND}/api/agent/call`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        runId: row.runId,
-        agentId: row.agentId,
-        providerId: row.providerId,
-        model: row.model,
-        kind: 'opencode',
-        promptTokens: row.promptTokens,
-        completionTokens: row.completionTokens,
-        costUsd: row.costUsd,
-        durationMs: row.durationMs,
-        startedAt: row.startedAt,
-        completedAt: row.completedAt,
-        error: null,
-      }),
-    });
-  } catch { /* telemetry failure is never fatal */ }
-}
-
 export async function runOpenCodeAgent(input: OpenCodeRunInput): Promise<OpenCodeRunOutput> {
   const { worktreePath, primaryProvider, developerPersona, runId, agentId } = input;
 
@@ -146,10 +118,10 @@ export async function runOpenCodeAgent(input: OpenCodeRunInput): Promise<OpenCod
   // opencode commits as part of its workflow.
   const baseSha = await snapshotHead(worktreePath);
 
-  // The per-run serve already wrote opencode.json + .opencode/agent/* during
-  // bootstrap. We re-write opencode.json here only as a safety net for the
-  // standalone-worker dev path — it's a no-op overwrite when the serve
-  // bootstrap already produced the same shape.
+  // Write opencode.json + AGENTS.md fresh per run. backend/src/opencode/
+  // bootstrap.ts:bootstrapWorktree exists but has no callers in the workflow
+  // path — the per-run serve relies on whatever exists in the worktree at
+  // startup, so we are the sole writer here.
   await writeOpencodeConfig(worktreePath, primaryProvider);
   await writeAgentsRules(worktreePath, developerPersona);
 
@@ -164,17 +136,19 @@ export async function runOpenCodeAgent(input: OpenCodeRunInput): Promise<OpenCod
   });
   const completedAt = Date.now();
 
-  await recordOpencodeCall({
+  await recordCall(process.env.ATELIER_BACKEND_URL || 'http://localhost:3001', {
     runId,
     agentId,
     providerId: primaryProvider.id,
     model: primaryProvider.selectedModel ?? '',
+    kind: 'opencode',
     promptTokens: result.promptTokens,
     completionTokens: result.completionTokens,
     costUsd: result.costUsd,
     durationMs: completedAt - startedAt,
     startedAt,
     completedAt,
+    error: null,
   });
 
   const filesChanged = await diffFilesSince(worktreePath, baseSha);

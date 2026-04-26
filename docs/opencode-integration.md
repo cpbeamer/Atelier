@@ -26,6 +26,8 @@ Open Settings (gear icon in the sidebar) and toggle "Use opencode for the develo
 
 For headless / standalone-worker development, set `ATELIER_USE_OPENCODE=1` in the worker's environment as a fallback. The worker resolves the flag from the backend first; if the backend is unreachable, it consults the env var.
 
+> **Migration note:** if you previously enabled opencode via `ATELIER_USE_OPENCODE=1`, also flip the Settings toggle on after upgrading. The backend setting is now authoritative when reachable, and its default is off — so an env-var-only setup will appear "off" once the backend value loads.
+
 ## Provider configuration
 
 `runOpenCodeAgent` writes an `opencode.json` per-worktree at run time, derived from the user's primary provider record (`backend/src/db.ts` model_config table). The shape:

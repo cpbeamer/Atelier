@@ -237,7 +237,14 @@ export async function autopilotWorkflow(input: AutopilotInput): Promise<Autopilo
   };
   } finally {
     if (opencodeStarted) {
-      await stopRunOpencode({ runId });
+      try {
+        await stopRunOpencode({ runId });
+      } catch {
+        // Swallow cleanup errors so the original failure (if any) propagates
+        // unmasked. A leaked subprocess is preferable to losing the real
+        // failure reason in Temporal history; the backend's process tracking
+        // will GC it when the run record is cleaned up.
+      }
     }
   }
 }
