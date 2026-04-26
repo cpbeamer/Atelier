@@ -638,13 +638,15 @@ For EACH feature, provide your specialist-scoped assessment in the JSON shape yo
     const reconcilerPersona = await loadPersona(process.cwd(), 'debate-reconciler');
     const reconcilePrompt = `Repo: ${repoAnalysis.repoStructure}\n\nFeatures assessed:\n${featuresToDebate.map((f, i) => `${i + 1}. ${f}`).join('\n')}\n\nSpecialist assessments:\n${JSON.stringify(assessmentMap, null, 2)}`;
 
+    const reconcileAgentId = agentIds?.reconcile ?? agentIds?.signal ?? 'debate-reconciler';
+    await notifyAgentStart({ agentId: reconcileAgentId, agentName: 'Debate Reconciler', terminalType: 'direct-llm' });
     const reconcileText = await sendAgentPrompt({
       runId: runId ?? '',
-      personaKey: agentIds?.reconcile ?? agentIds?.signal ?? 'debate-reconciler',
+      personaKey: reconcileAgentId,
       personaText: reconcilerPersona,
       userPrompt: reconcilePrompt,
     });
-    return await withJsonRetry<DebateOutput>(
+    const reconcileResult = await withJsonRetry<DebateOutput>(
       () => Promise.resolve(reconcileText),
       {
         maxAttempts: 1,
@@ -654,6 +656,8 @@ For EACH feature, provide your specialist-scoped assessment in the JSON shape yo
           && Array.isArray((v as any).rejectedFeatures),
       },
     );
+    await notifyAgentComplete({ agentId: reconcileAgentId, status: 'completed', output: JSON.stringify(reconcileResult).slice(0, 500) });
+    return reconcileResult;
   } else {
     // Legacy path: callLLM per specialist.
     const assessments = await Promise.all(DEBATE_SPECIALISTS.map(async (specialist) => {

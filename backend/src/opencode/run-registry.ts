@@ -1,11 +1,9 @@
-import type { Persona } from './personas.js';
-
 export interface RunEntry {
   worktreePath: string;
   port: number;
   password: string;
   pid: number;
-  sessions: Map<Persona, string>;
+  sessions: Map<string, string>;
 }
 
 class RunRegistry {
@@ -23,7 +21,7 @@ class RunRegistry {
     this.map.delete(runId);
   }
 
-  attachSession(runId: string, persona: Persona, sessionId: string): void {
+  attachSession(runId: string, persona: string, sessionId: string): void {
     const entry = this.map.get(runId);
     if (!entry) throw new Error(`No run registered for ${runId}`);
     entry.sessions.set(persona, sessionId);

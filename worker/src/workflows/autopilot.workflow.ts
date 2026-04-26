@@ -76,8 +76,8 @@ export async function autopilotWorkflow(input: AutopilotInput): Promise<Autopilo
 
   // If opencode is the chosen backend, start the per-run serve.
   if (await useOpencodeForRun()) {
-    await startRunOpencode({ runId, worktreePath });
     await bootstrapOpencodeWorktree({ worktreePath });
+    await startRunOpencode({ runId, worktreePath });
     opencodeStarted = true;
   }
 

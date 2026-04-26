@@ -58,7 +58,7 @@ export async function greenfieldWorkflow(input: GreenfieldInput): Promise<any> {
     let reviewApproved = false;
     for (let i = 0; i < 3 && !reviewApproved; i++) {
       await notifyAgentStart({ agentId: 'reviewer', agentName: 'Code Reviewer', terminalType: 'terminal' });
-      const result = await reviewCode({ implementation, ticket, agentId: 'reviewer' });
+      const result = await reviewCode({ implementation, ticket, agentId: 'reviewer', runId });
       await notifyAgentComplete({ agentId: 'reviewer', status: 'completed' });
       if (result.approved) {
         reviewApproved = true;
