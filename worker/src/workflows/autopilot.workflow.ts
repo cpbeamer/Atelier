@@ -17,6 +17,9 @@ const {
   emitStalledMilestone,
   notifyAgentStart,
   notifyAgentComplete,
+  startRunOpencode,
+  stopRunOpencode,
+  useOpencodeForRun,
 } = proxyActivities<typeof activities>({
   startToCloseTimeout: '30 minutes',
   // Retry on transient LLM/network failures. NonRetryableAgentError (thrown from
@@ -60,6 +63,8 @@ function summarize(value: unknown, maxLen = 2500): string {
 
 export async function autopilotWorkflow(input: AutopilotInput): Promise<AutopilotOutput> {
   const { projectPath, projectSlug, runId, userContext = {}, suggestedFeatures = [] } = input;
+  let opencodeStarted = false;
+  try {
 
   // Note: no top-level try/catch here on purpose. Genuine failures propagate to
   // Temporal so the workflow history records them and operators can see what
@@ -67,6 +72,12 @@ export async function autopilotWorkflow(input: AutopilotInput): Promise<Autopilo
 
   // Phase 0: Create git worktree for isolated work
   const { worktreePath } = await setupWorkspace({ projectPath, projectSlug, runId });
+
+  // If opencode is the chosen backend, start the per-run serve.
+  if (await useOpencodeForRun()) {
+    await startRunOpencode({ runId, worktreePath });
+    opencodeStarted = true;
+  }
 
   // Phase 1: Repository Analysis
   await notifyAgentStart({ agentId: 'researcher', agentName: 'Research Agent', terminalType: 'terminal' });
@@ -224,4 +235,16 @@ export async function autopilotWorkflow(input: AutopilotInput): Promise<Autopilo
     ticketsCreated: scopedTickets.length,
     prBranch: pushResult.branch,
   };
+  } finally {
+    if (opencodeStarted) {
+      try {
+        await stopRunOpencode({ runId });
+      } catch {
+        // Swallow cleanup errors so the original failure (if any) propagates
+        // unmasked. A leaked subprocess is preferable to losing the real
+        // failure reason in Temporal history; the backend's process tracking
+        // will GC it when the run record is cleaned up.
+      }
+    }
+  }
 }

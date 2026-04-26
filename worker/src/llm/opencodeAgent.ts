@@ -1,17 +1,18 @@
-// Spawns `opencode run` inside a git worktree as a real tool-using agent.
-// Replaces the legacy one-shot `callLLM` + `BEGIN FILE / END FILE` parsing
-// path for `implementCode` when ATELIER_USE_OPENCODE=1.
+// Routes the developer activity through the per-run opencode serve via the
+// SDK, capturing token usage on each turn for the cost-by-agent panel.
 //
-// Returns the set of files changed since opencode started — captured via git
-// diff against a snapshot of HEAD taken before the run, so the result is
-// correct whether opencode itself runs `git commit` (it might) or leaves
-// changes unstaged in the working tree.
+// This file used to spawn `opencode run` over the backend's PTY manager and
+// poll for completion. The PTY path emitted tokens to opencode's local stats
+// DB only — Atelier's agent_calls table never saw them, so the developer cost
+// always rendered as zero. We now talk to the per-run opencode serve through
+// the SDK (`sendDeveloperPrompt`) and forward token usage + cost to the
+// `/api/agent/call` telemetry endpoint.
 
-import { writeOpencodeConfig, writeAgentsRules, OPENCODE_API_KEY_ENV } from './opencodeConfig';
+import { writeOpencodeConfig, writeAgentsRules } from './opencodeConfig';
+import { sendDeveloperPrompt } from './opencodeServeClient';
+import { recordCall } from './telemetry';
 import type { PrimaryProvider } from './callLLM';
 import type { ScopedTicket } from '../activities';
-
-const BACKEND = process.env.ATELIER_BACKEND_URL || 'http://localhost:3001';
 
 export interface OpenCodeRunInput {
   worktreePath: string;
@@ -20,10 +21,10 @@ export interface OpenCodeRunInput {
   testFeedback?: string[];
   agentId: string;
   runId: string;
-  /** Resolved primary-provider API key. Passed to the subprocess via env so it
-   *  doesn't leak into the long-lived backend process.env. */
+  /** Resolved primary-provider API key. Currently unused on the SDK path
+   *  because the per-run serve already has the key wired in via the
+   *  bootstrapped opencode.json — kept for signature compatibility. */
   apiKey: string;
-  timeoutMs?: number;
   primaryProvider: PrimaryProvider;
   developerPersona: string;
 }
@@ -40,15 +41,6 @@ export interface OpenCodeRunOutput {
 
 export class NoOpencodeChangesError extends Error {
   name = 'NonRetryableAgentError';
-}
-
-interface PtyStatus {
-  status: 'running' | 'completed' | 'error';
-  output?: string;
-  outputTail?: string;
-  exitCode?: number;
-  signal?: number;
-  error?: string;
 }
 
 async function runGit(cwd: string, args: string[]): Promise<{ stdout: string; exitCode: number }> {
@@ -110,44 +102,6 @@ function buildTaskPrompt(input: OpenCodeRunInput): string {
   return parts.join('\n');
 }
 
-async function spawnOpencodePty(input: OpenCodeRunInput, taskPrompt: string): Promise<void> {
-  const model = input.primaryProvider.selectedModel ?? 'default';
-  const response = await fetch(`${BACKEND}/api/pty/spawn`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      id: input.agentId,
-      command: 'opencode',
-      args: ['run', '--dangerously-skip-permissions', '--model', `primary/${model}`, taskPrompt],
-      cwd: input.worktreePath,
-      env: { [OPENCODE_API_KEY_ENV]: input.apiKey },
-    }),
-  });
-  if (!response.ok) {
-    const text = await response.text().catch(() => '');
-    throw new Error(`Failed to spawn opencode PTY: HTTP ${response.status} ${text.slice(0, 200)}`);
-  }
-}
-
-async function pollUntilComplete(agentId: string, timeoutMs: number): Promise<PtyStatus> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(`${BACKEND}/api/agent/${encodeURIComponent(agentId)}/status`);
-      if (response.ok) {
-        const status = await response.json() as PtyStatus;
-        if (status.status === 'completed' || status.status === 'error') {
-          return status;
-        }
-      }
-    } catch {
-      // Backend may flap — keep polling.
-    }
-    await new Promise((r) => setTimeout(r, 2000));
-  }
-  throw new Error(`opencode PTY timeout after ${timeoutMs}ms (agentId=${agentId})`);
-}
-
 function extractSummary(outputTail: string): string {
   const lines = outputTail.split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -158,34 +112,48 @@ function extractSummary(outputTail: string): string {
 }
 
 export async function runOpenCodeAgent(input: OpenCodeRunInput): Promise<OpenCodeRunOutput> {
-  const {
-    worktreePath, primaryProvider, developerPersona, agentId,
-    timeoutMs = 30 * 60 * 1000,
-  } = input;
+  const { worktreePath, primaryProvider, developerPersona, runId, agentId } = input;
 
   // Snapshot HEAD before opencode runs so the diff is correct whether or not
   // opencode commits as part of its workflow.
   const baseSha = await snapshotHead(worktreePath);
 
+  // Write opencode.json + AGENTS.md fresh per run. backend/src/opencode/
+  // bootstrap.ts:bootstrapWorktree exists but has no callers in the workflow
+  // path — the per-run serve relies on whatever exists in the worktree at
+  // startup, so we are the sole writer here.
   await writeOpencodeConfig(worktreePath, primaryProvider);
   await writeAgentsRules(worktreePath, developerPersona);
 
   const taskPrompt = buildTaskPrompt(input);
-  await spawnOpencodePty(input, taskPrompt);
-  const status = await pollUntilComplete(agentId, timeoutMs);
+
+  const startedAt = Date.now();
+  const result = await sendDeveloperPrompt({
+    runId,
+    persona: 'developer',
+    prompt: taskPrompt,
+    model: primaryProvider.selectedModel ? `primary/${primaryProvider.selectedModel}` : undefined,
+  });
+  const completedAt = Date.now();
+
+  await recordCall(process.env.ATELIER_BACKEND_URL || 'http://localhost:3001', {
+    runId,
+    agentId,
+    providerId: primaryProvider.id,
+    model: primaryProvider.selectedModel ?? '',
+    kind: 'opencode',
+    promptTokens: result.promptTokens,
+    completionTokens: result.completionTokens,
+    costUsd: result.costUsd,
+    durationMs: completedAt - startedAt,
+    startedAt,
+    completedAt,
+    error: null,
+  });
 
   const filesChanged = await diffFilesSince(worktreePath, baseSha);
-  const outputTail = status.outputTail ?? status.output ?? '';
+  const outputTail = result.text;
   const summary = extractSummary(outputTail);
-  const exitCode = status.exitCode ?? (status.status === 'completed' ? 0 : 1);
 
-  if (exitCode !== 0) {
-    // Crash mid-run — let Temporal retry. The transient-error retry policy in
-    // the workflow already caps at 3 attempts.
-    throw new Error(
-      `opencode exited ${exitCode}${status.signal ? ` (signal ${status.signal})` : ''}: ${outputTail.slice(-500)}`,
-    );
-  }
-
-  return { summary, filesChanged, exitCode, outputTail };
+  return { summary, filesChanged, exitCode: 0, outputTail };
 }
