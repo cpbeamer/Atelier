@@ -555,6 +555,89 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // POST /api/opencode/run/:runId/start — body { worktreePath: string }
+  if (req.method === 'POST' && url.pathname.match(/^\/api\/opencode\/run\/[^/]+\/start$/)) {
+    const runId = url.pathname.split('/')[4];
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', async () => {
+      try {
+        const { worktreePath } = JSON.parse(body) as { worktreePath: string };
+        if (!worktreePath) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'worktreePath required' }));
+          return;
+        }
+        const { startOpencodeServer } = await import('./opencode/lifecycle.js');
+        const info = await startOpencodeServer(runId, worktreePath);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ runId, ...info }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+    });
+    return;
+  }
+
+  // POST /api/opencode/run/:runId/stop
+  if (req.method === 'POST' && url.pathname.match(/^\/api\/opencode\/run\/[^/]+\/stop$/)) {
+    const runId = url.pathname.split('/')[4];
+    try {
+      const { stopOpencodeServer } = await import('./opencode/lifecycle.js');
+      await stopOpencodeServer(runId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: String(err) }));
+    }
+    return;
+  }
+
+  // GET /api/opencode/run/:runId — returns { runId, worktreePath, port, password } or 404
+  if (req.method === 'GET' && url.pathname.match(/^\/api\/opencode\/run\/[^/]+$/)) {
+    const runId = url.pathname.split('/')[4];
+    try {
+      const { getOpencodeServer } = await import('./opencode/lifecycle.js');
+      const info = getOpencodeServer(runId);
+      if (!info) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `no opencode server for run ${runId}` }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        runId,
+        worktreePath: info.worktreePath,
+        port: info.port,
+        password: info.password,
+      }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: String(err) }));
+    }
+    return;
+  }
+
+  // POST /api/opencode/run/:runId/session/:persona — ensure the persona session
+  // exists for this run, returns { sessionId }
+  if (req.method === 'POST' && url.pathname.match(/^\/api\/opencode\/run\/[^/]+\/session\/[^/]+$/)) {
+    const parts = url.pathname.split('/');
+    const runId = parts[4];
+    const persona = parts[6];
+    try {
+      const { ensureSession } = await import('./opencode/sessions.js');
+      const result = await ensureSession(runId, persona as any);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: String(err) }));
+    }
+    return;
+  }
+
   // Default: 404
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: 'Not found' }));

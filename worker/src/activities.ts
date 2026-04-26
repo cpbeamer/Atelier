@@ -1463,3 +1463,35 @@ export async function resolveMilestone(
 ): Promise<void> {
   console.log('resolveMilestone', milestoneId, decision);
 }
+
+const OPENCODE_BACKEND = process.env.ATELIER_BACKEND_URL || 'http://localhost:3001';
+
+export async function startRunOpencode(input: { runId: string; worktreePath: string }): Promise<void> {
+  const response = await fetch(`${OPENCODE_BACKEND}/api/opencode/run/${encodeURIComponent(input.runId)}/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ worktreePath: input.worktreePath }),
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`Failed to start opencode serve for run ${input.runId}: HTTP ${response.status} ${text.slice(0, 200)}`);
+  }
+}
+
+export async function stopRunOpencode(input: { runId: string }): Promise<void> {
+  // Best-effort: failure here is non-fatal, the cleanup just leaks a subprocess
+  // until the backend exits. Don't throw.
+  try {
+    await fetch(`${OPENCODE_BACKEND}/api/opencode/run/${encodeURIComponent(input.runId)}/stop`, {
+      method: 'POST',
+    });
+  } catch {
+    // Backend unreachable — caller has nothing useful to do.
+  }
+}
+
+// Workflow code can't read process.env or call fetch directly. Expose the
+// flag resolver as an activity so the workflow can branch on it.
+export async function useOpencodeForRun(): Promise<boolean> {
+  return useOpencode();
+}
