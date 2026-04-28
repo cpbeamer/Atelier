@@ -50,6 +50,7 @@
 // ----------------------------------------------------------------------------
 
 import { createOpencodeClient } from '@opencode-ai/sdk';
+import { stripThinking } from './callLLM.js';
 
 const BACKEND = process.env.ATELIER_BACKEND_URL || 'http://localhost:3001';
 
@@ -205,5 +206,5 @@ export async function sendAgentPrompt(input: AgentPromptInput): Promise<string> 
   ].join('\n');
 
   const result = await sendDeveloperPrompt({ runId, persona: personaKey, prompt, model });
-  return result.text;
+  return stripThinking(result.text);
 }
