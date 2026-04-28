@@ -27,10 +27,10 @@ export async function milestone(
   return result as { verdict: 'Approved' | 'Rejected'; reason?: string; decidedBy: string };
 }
 
-export function defineWorkflow<T extends { input: unknown }>(config: {
+export function defineWorkflow<TInput>(config: {
   name: string;
-  input: unknown;
-  run: (input: T['input']) => Promise<unknown>;
+  input: TInput;
+  run: (input: TInput) => Promise<unknown>;
 }) {
   return config;
 }

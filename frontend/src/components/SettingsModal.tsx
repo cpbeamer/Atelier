@@ -47,6 +47,8 @@ export function SettingsModal({ isOpen, onClose }: Props) {
   const [apiKeyInput, setApiKeyInput] = useState<{ providerId: string; value: string } | null>(null);
   const [customDraft, setCustomDraft] = useState<CustomDraft | null>(null);
   const [customError, setCustomError] = useState<string | null>(null);
+  const [useOpencodeFlag, setUseOpencodeFlag] = useState<boolean>(false);
+  const [useOpencodeLoading, setUseOpencodeLoading] = useState(false);
 
   useEffect(() => {
     if (isOpen) loadConfig();
@@ -58,6 +60,8 @@ export function SettingsModal({ isOpen, onClose }: Props) {
     try {
       const config = await invoke<ModelProvider[]>('settings.modelConfig:get');
       setProviders(config);
+      const flag = await invoke<{ useOpencode: boolean }>('settings.useOpencode:get');
+      setUseOpencodeFlag(flag.useOpencode);
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -126,6 +130,20 @@ export function SettingsModal({ isOpen, onClose }: Props) {
       await loadConfig();
     } catch (e: any) {
       setCustomError(e.message ?? 'Failed to add provider');
+    }
+  }
+
+  async function handleToggleUseOpencode() {
+    const next = !useOpencodeFlag;
+    setUseOpencodeLoading(true);
+    setUseOpencodeFlag(next);
+    try {
+      await invoke('settings.useOpencode:set', { useOpencode: next });
+    } catch (e: any) {
+      setError(e.message);
+      setUseOpencodeFlag(!next); // revert
+    } finally {
+      setUseOpencodeLoading(false);
     }
   }
 
@@ -209,6 +227,38 @@ export function SettingsModal({ isOpen, onClose }: Props) {
           {!loading && providers.length > 0 && configured.length === 0 && available.length === 0 && (
             <p className="text-[13px] text-[var(--color-text-muted)]">No providers match "{search}".</p>
           )}
+
+          <div className="mt-6 pt-5 border-t border-[var(--color-hair)]">
+            <div className="text-[12px] text-[var(--color-text-faint)] mb-3">
+              Implementation backend
+            </div>
+            <div className="rounded-lg border border-[var(--color-hair)] bg-[var(--color-surface-2)]/50 p-4">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="text-[13.5px] font-medium mb-1">
+                    Use opencode for the developer agent
+                  </div>
+                  <div className="text-[12px] text-[var(--color-text-muted)] leading-relaxed">
+                    When on, the developer agent runs as a tool-using opencode session
+                    inside the worktree (Read, Edit, Bash, Grep). When off, the developer
+                    uses the legacy one-shot LLM dictation path.
+                  </div>
+                </div>
+                <label className="flex items-center gap-1.5 text-[12px] cursor-pointer shrink-0 pt-1">
+                  <input
+                    type="checkbox"
+                    checked={useOpencodeFlag}
+                    disabled={useOpencodeLoading}
+                    onChange={handleToggleUseOpencode}
+                    className="w-3 h-3 accent-[var(--color-accent)]"
+                  />
+                  <span className="text-[var(--color-text-muted)]">
+                    {useOpencodeFlag ? 'On' : 'Off'}
+                  </span>
+                </label>
+              </div>
+            </div>
+          </div>
 
           <div className="mt-6 pt-5 border-t border-[var(--color-hair)]">
             {customDraft ? (

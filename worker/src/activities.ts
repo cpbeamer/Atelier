@@ -194,11 +194,15 @@ export interface AgentCompletion {
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { callLLM, getPrimaryModelName } from './llm/callLLM.js';
+import { callLLM, getPrimaryModelName, getPrimaryProvider, getApiKey } from './llm/callLLM.js';
 import { withJsonRetry } from './llm/withJsonRetry.js';
 import { NonRetryableAgentError } from './errors.js';
 import { runVerify } from './verify.js';
 import { loadPersona, loadPanel } from './personaLoader.js';
+import { runOpenCodeAgent } from './llm/opencodeAgent.js';
+import { useOpencode } from './llm/featureFlags.js';
+import { sendAgentPrompt } from './llm/opencodeServeClient.js';
+import { writeOpencodeConfig } from './llm/opencodeConfig.js';
 
 async function readFile(filePath: string): Promise<string> {
   return fs.promises.readFile(filePath, 'utf-8');
@@ -231,6 +235,8 @@ function stripThinking(output: string): string {
 
 interface FileEdit { kind: 'write' | 'delete'; path: string; contents?: string; }
 
+// Legacy: only used on the one-shot LLM dictation path (ATELIER_USE_OPENCODE!=1).
+// Under opencode the agent edits files directly via its own tools.
 function parseFileEdits(raw: string): FileEdit[] {
   const output = stripThinking(raw);
   const edits: FileEdit[] = [];
@@ -418,10 +424,63 @@ export async function researchRepo(input: ResearchInput): Promise<ResearchOutput
 
   const { baseContext } = await gatherRepoContext(projectPath);
   const history = await gitHistorySummary(projectPath);
-  const panel = await loadPanel(process.cwd(), 'researcher', RESEARCHER_SPECIALISTS);
 
-  // Fan out — each specialist gets the shared base context plus any specialist-
-  // specific extra context (git history for the history specialist).
+  if (await useOpencode()) {
+    const panel = await loadPanel(process.cwd(), 'researcher', RESEARCHER_SPECIALISTS);
+    const fragments = await Promise.all(RESEARCHER_SPECIALISTS.map(async (specialist) => {
+      const agentId = `researcher-${specialist}`;
+      await notifyAgentStart({ agentId, agentName: `Researcher (${specialist})`, terminalType: 'direct-llm' });
+      const extra = specialist === 'history'
+        ? `\n\n## Recent git history (subject lines, last 90 days)\n${history || '(no git history)'}`
+        : '';
+      try {
+        const text = await sendAgentPrompt({
+          runId: runId ?? '',
+          personaKey: agentId,
+          personaText: panel[specialist],
+          userPrompt: `${baseContext}${extra}`,
+        });
+        const out = await withJsonRetry<Record<string, unknown>>(
+          () => Promise.resolve(text),
+          { maxAttempts: 3, validate: (v) => typeof v === 'object' && v !== null },
+        );
+        await notifyAgentComplete({ agentId, status: 'completed', output: JSON.stringify(out).slice(0, 500) });
+        return [specialist, out] as const;
+      } catch (e) {
+        await notifyAgentComplete({ agentId, status: 'error', output: String(e).slice(0, 500) });
+        return [specialist, { error: String(e) }] as const;
+      }
+    }));
+
+    const specialistFindings = Object.fromEntries(fragments) as Record<ResearcherSpecialist, Record<string, unknown>>;
+    const synthPersona = await loadPersona(process.cwd(), 'researcher-synthesizer');
+    const synthPrompt = `User context: ${JSON.stringify(userContext)}\n\nSpecialist findings:\n${JSON.stringify(specialistFindings, null, 2)}`;
+    try {
+      const synthText = await sendAgentPrompt({
+        runId: runId ?? '',
+        personaKey: 'researcher-synthesizer',
+        personaText: synthPersona,
+        userPrompt: synthPrompt,
+      });
+      return await withJsonRetry<ResearchOutput>(
+        () => Promise.resolve(synthText),
+        {
+          maxAttempts: 3,
+          validate: (v): v is ResearchOutput =>
+            typeof v === 'object' && v !== null
+            && typeof (v as any).repoStructure === 'string'
+            && Array.isArray((v as any).currentFeatures)
+            && Array.isArray((v as any).gaps)
+            && Array.isArray((v as any).opportunities),
+        },
+      );
+    } catch {
+      return fallbackSynthesizeResearch(specialistFindings, baseContext);
+    }
+  }
+
+  // Legacy path: pre-fetched context, callLLM per specialist.
+  const panel = await loadPanel(process.cwd(), 'researcher', RESEARCHER_SPECIALISTS);
   const fragments = await Promise.all(RESEARCHER_SPECIALISTS.map(async (specialist) => {
     const agentId = `researcher-${specialist}`;
     await notifyAgentStart({ agentId, agentName: `Researcher (${specialist})`, terminalType: 'direct-llm' });
@@ -447,8 +506,6 @@ export async function researchRepo(input: ResearchInput): Promise<ResearchOutput
   }));
 
   const specialistFindings = Object.fromEntries(fragments) as Record<ResearcherSpecialist, Record<string, unknown>>;
-
-  // Synthesize into the canonical ResearchOutput shape.
   const synthPersona = await loadPersona(process.cwd(), 'researcher-synthesizer');
   const synthPrompt = `User context: ${JSON.stringify(userContext)}\n\nSpecialist findings:\n${JSON.stringify(specialistFindings, null, 2)}`;
 
@@ -470,8 +527,6 @@ export async function researchRepo(input: ResearchInput): Promise<ResearchOutput
       },
     );
   } catch {
-    // Synthesizer failed — fall back to a deterministic merge of whatever the
-    // specialists produced, so the pipeline can still proceed.
     return fallbackSynthesizeResearch(specialistFindings, baseContext);
   }
 }
@@ -541,9 +596,6 @@ ${featuresToDebate.map((f, i) => `${i + 1}. ${f}`).join('\n')}
 For EACH feature, provide your specialist-scoped assessment in the JSON shape your persona specifies.
 `;
 
-  // Fan out to all 6 specialists in parallel. signal/noise keep their existing
-  // agentIds (so prior UI panels still light up); the new specialists stream
-  // into their own 'debate-<name>' panes.
   const specialistAgentIds: Record<DebateSpecialist, string> = {
     signal: agentIds?.signal ?? 'debate-signal',
     noise: agentIds?.noise ?? 'debate-noise',
@@ -553,57 +605,106 @@ For EACH feature, provide your specialist-scoped assessment in the JSON shape yo
     maintainability: 'debate-maintainability',
   };
 
-  const assessments = await Promise.all(DEBATE_SPECIALISTS.map(async (specialist) => {
-    const sAgentId = specialistAgentIds[specialist];
-    // signal/noise already get notifyAgentStart from the workflow. New
-    // specialists need their own since the workflow doesn't know about them.
-    const isNew = specialist !== 'signal' && specialist !== 'noise';
-    if (isNew) {
-      await notifyAgentStart({ agentId: sAgentId, agentName: `Debate (${specialist})`, terminalType: 'direct-llm' });
-    }
-    try {
-      const out = await withJsonRetry<Record<string, unknown>>(
-        (suffix) => callLLM(panel[specialist], `${debatePrompt}${suffix ?? ''}`, {
-          agentId: sAgentId, runId,
-        }),
-        {
-          maxAttempts: 2,
-          validate: (v) => typeof v === 'object' && v !== null && 'assessments' in (v as object),
-        },
-      );
+  if (await useOpencode()) {
+    const assessments = await Promise.all(DEBATE_SPECIALISTS.map(async (specialist) => {
+      const sAgentId = specialistAgentIds[specialist];
+      const isNew = specialist !== 'signal' && specialist !== 'noise';
       if (isNew) {
-        await notifyAgentComplete({ agentId: sAgentId, status: 'completed', output: JSON.stringify(out).slice(0, 500) });
+        await notifyAgentStart({ agentId: sAgentId, agentName: `Debate (${specialist})`, terminalType: 'direct-llm' });
       }
-      return [specialist, out] as const;
-    } catch (e) {
+      try {
+        const text = await sendAgentPrompt({
+          runId: runId ?? '',
+          personaKey: sAgentId,
+          personaText: panel[specialist],
+          userPrompt: debatePrompt,
+        });
+        const out = await withJsonRetry<Record<string, unknown>>(
+          () => Promise.resolve(text),
+          {
+            maxAttempts: 3,
+            validate: (v) => typeof v === 'object' && v !== null && 'assessments' in (v as object),
+          },
+        );
+        if (isNew) await notifyAgentComplete({ agentId: sAgentId, status: 'completed', output: JSON.stringify(out).slice(0, 500) });
+        return [specialist, out] as const;
+      } catch (e) {
+        if (isNew) await notifyAgentComplete({ agentId: sAgentId, status: 'error', output: String(e).slice(0, 500) });
+        return [specialist, { error: String(e), assessments: [] }] as const;
+      }
+    }));
+    const assessmentMap = Object.fromEntries(assessments) as Record<DebateSpecialist, Record<string, unknown>>;
+
+    const reconcilerPersona = await loadPersona(process.cwd(), 'debate-reconciler');
+    const reconcilePrompt = `Repo: ${repoAnalysis.repoStructure}\n\nFeatures assessed:\n${featuresToDebate.map((f, i) => `${i + 1}. ${f}`).join('\n')}\n\nSpecialist assessments:\n${JSON.stringify(assessmentMap, null, 2)}`;
+
+    const reconcileAgentId = agentIds?.reconcile ?? agentIds?.signal ?? 'debate-reconciler';
+    await notifyAgentStart({ agentId: reconcileAgentId, agentName: 'Debate Reconciler', terminalType: 'direct-llm' });
+    const reconcileText = await sendAgentPrompt({
+      runId: runId ?? '',
+      personaKey: reconcileAgentId,
+      personaText: reconcilerPersona,
+      userPrompt: reconcilePrompt,
+    });
+    const reconcileResult = await withJsonRetry<DebateOutput>(
+      () => Promise.resolve(reconcileText),
+      {
+        maxAttempts: 3,
+        validate: (v): v is DebateOutput =>
+          typeof v === 'object' && v !== null
+          && Array.isArray((v as any).approvedFeatures)
+          && Array.isArray((v as any).rejectedFeatures),
+      },
+    );
+    await notifyAgentComplete({ agentId: reconcileAgentId, status: 'completed', output: JSON.stringify(reconcileResult).slice(0, 500) });
+    return reconcileResult;
+  } else {
+    // Legacy path: callLLM per specialist.
+    const assessments = await Promise.all(DEBATE_SPECIALISTS.map(async (specialist) => {
+      const sAgentId = specialistAgentIds[specialist];
+      // signal/noise already get notifyAgentStart from the workflow. New
+      // specialists need their own since the workflow doesn't know about them.
+      const isNew = specialist !== 'signal' && specialist !== 'noise';
       if (isNew) {
-        await notifyAgentComplete({ agentId: sAgentId, status: 'error', output: String(e).slice(0, 500) });
+        await notifyAgentStart({ agentId: sAgentId, agentName: `Debate (${specialist})`, terminalType: 'direct-llm' });
       }
-      return [specialist, { error: String(e), assessments: [] }] as const;
-    }
-  }));
+      try {
+        const out = await withJsonRetry<Record<string, unknown>>(
+          (suffix) => callLLM(panel[specialist], `${debatePrompt}${suffix ?? ''}`, {
+            agentId: sAgentId, runId,
+          }),
+          {
+            maxAttempts: 2,
+            validate: (v) => typeof v === 'object' && v !== null && 'assessments' in (v as object),
+          },
+        );
+        if (isNew) await notifyAgentComplete({ agentId: sAgentId, status: 'completed', output: JSON.stringify(out).slice(0, 500) });
+        return [specialist, out] as const;
+      } catch (e) {
+        if (isNew) await notifyAgentComplete({ agentId: sAgentId, status: 'error', output: String(e).slice(0, 500) });
+        return [specialist, { error: String(e), assessments: [] }] as const;
+      }
+    }));
 
-  const assessmentMap = Object.fromEntries(assessments) as Record<DebateSpecialist, Record<string, unknown>>;
+    const assessmentMap = Object.fromEntries(assessments) as Record<DebateSpecialist, Record<string, unknown>>;
+    const reconcilerPersona = await loadPersona(process.cwd(), 'debate-reconciler');
+    const reconcilePrompt = `Repo: ${repoAnalysis.repoStructure}\n\nFeatures assessed:\n${featuresToDebate.map((f, i) => `${i + 1}. ${f}`).join('\n')}\n\nSpecialist assessments:\n${JSON.stringify(assessmentMap, null, 2)}`;
 
-  // Reconcile — a 7th LLM call that weighs the six lenses into a single
-  // approve/reject list. Streams into the reconcile/signal pane for continuity.
-  const reconcilerPersona = await loadPersona(process.cwd(), 'debate-reconciler');
-  const reconcilePrompt = `Repo: ${repoAnalysis.repoStructure}\n\nFeatures assessed:\n${featuresToDebate.map((f, i) => `${i + 1}. ${f}`).join('\n')}\n\nSpecialist assessments:\n${JSON.stringify(assessmentMap, null, 2)}`;
-
-  return await withJsonRetry<DebateOutput>(
-    (suffix) => callLLM(
-      reconcilerPersona,
-      `${reconcilePrompt}${suffix ?? ''}`,
-      { agentId: agentIds?.reconcile ?? agentIds?.signal ?? 'debate-reconciler', runId },
-    ),
-    {
-      maxAttempts: 3,
-      validate: (v): v is DebateOutput =>
-        typeof v === 'object' && v !== null
-        && Array.isArray((v as any).approvedFeatures)
-        && Array.isArray((v as any).rejectedFeatures),
-    },
-  );
+    return await withJsonRetry<DebateOutput>(
+      (suffix) => callLLM(
+        reconcilerPersona,
+        `${reconcilePrompt}${suffix ?? ''}`,
+        { agentId: agentIds?.reconcile ?? agentIds?.signal ?? 'debate-reconciler', runId },
+      ),
+      {
+        maxAttempts: 3,
+        validate: (v): v is DebateOutput =>
+          typeof v === 'object' && v !== null
+          && Array.isArray((v as any).approvedFeatures)
+          && Array.isArray((v as any).rejectedFeatures),
+      },
+    );
+  }
 }
 
 export async function generateTickets(input: TicketsInput): Promise<TicketsOutput> {
@@ -630,6 +731,26 @@ For each feature, generate a ticket with:
 Respond ONLY with valid JSON array of tickets.
 `;
 
+  if (await useOpencode()) {
+    const text = await sendAgentPrompt({
+      runId: runId ?? '',
+      personaKey: agentId ?? 'ticket-bot',
+      personaText: persona,
+      userPrompt: prompt,
+    });
+    const tickets = await withJsonRetry<Ticket[]>(
+      () => Promise.resolve(text),
+      {
+        maxAttempts: 3,
+        validate: (v): v is Ticket[] =>
+          Array.isArray(v)
+          && v.every((t) => typeof t === 'object' && t !== null && 'id' in t && 'title' in t && 'acceptanceCriteria' in t),
+      },
+    );
+    return { tickets };
+  }
+
+  // Legacy path.
   const tickets = await withJsonRetry<Ticket[]>(
     (suffix) => callLLM(persona, `${prompt}${suffix ?? ''}`, { agentId, runId }),
     {
@@ -675,10 +796,48 @@ Be specific. Generic plans are useless. Respond with ONLY a JSON array, one entr
     complexity?: 'low' | 'medium' | 'high';
   };
 
-  // Best-of-3 with a judge. Three parallel architects at spread temperatures
-  // produce candidate plans; a judge picks/synthesizes the best. On a small
-  // repo with cheap tokens (MiniMax M2.7) this buys real accuracy at trivial
-  // cost — the whole phase fans out + joins in the time of one sequential call.
+  if (await useOpencode()) {
+    const architectAgentId = agentId ?? 'architect';
+    await notifyAgentStart({
+      agentId: architectAgentId,
+      agentName: 'Architect',
+      terminalType: 'direct-llm',
+    });
+    try {
+      const text = await sendAgentPrompt({
+        runId: runId ?? '',
+        personaKey: architectAgentId,
+        personaText: persona,
+        userPrompt: prompt,
+      });
+      const chosen = await withJsonRetry<ArchitectEntry[]>(
+        () => Promise.resolve(text),
+        {
+          maxAttempts: 3,
+          validate: (v) => Array.isArray(v) && v.length === tickets.length,
+        },
+      );
+      await notifyAgentComplete({
+        agentId: architectAgentId,
+        status: 'completed',
+        output: JSON.stringify(chosen).slice(0, 500),
+      });
+      return {
+        scopedTickets: tickets.map((t, i) => ({
+          ...t,
+          technicalPlan: chosen[i]?.technicalPlan || 'Plan pending',
+          filesToChange: chosen[i]?.filesToChange ?? [],
+          dependencies: chosen[i]?.dependencies ?? [],
+          complexity: chosen[i]?.complexity ?? 'medium',
+        })),
+      };
+    } catch (e) {
+      await notifyAgentComplete({ agentId: architectAgentId, status: 'error', output: String(e).slice(0, 500) });
+      throw e;
+    }
+  }
+
+  // Legacy path: best-of-3 parallel blind LLM calls with a judge.
   const candidateTemps = [0.2, 0.6, 0.9] as const;
   const candidates = await Promise.all(candidateTemps.map(async (temperature, idx) => {
     const subAgentId = `architect-${idx + 1}`;
@@ -759,6 +918,33 @@ export async function implementCode(input: ImplementInput): Promise<ImplementOut
 
   const persona = await loadPersona(projectPath, 'developer');
 
+  // opencode path: spawn a real tool-using agent inside the worktree. The
+  // agent has Read/Edit/Bash/Grep tools so it iterates against actual repo
+  // state instead of dictating BEGIN FILE blocks blind. Gated behind a flag
+  // until smoke-tested across more tickets.
+  if (await useOpencode()) {
+    const provider = await getPrimaryProvider();
+    const apiKey = await getApiKey(provider.id, provider.kind);
+    const run = await runOpenCodeAgent({
+      worktreePath, ticket, feedback, testFeedback,
+      agentId: agentId ?? 'developer',
+      runId: runId ?? 'unknown',
+      apiKey,
+      primaryProvider: provider,
+      developerPersona: persona,
+    });
+    if (run.filesChanged.length === 0) {
+      // The model ran cleanly and explicitly chose to change nothing. Retrying
+      // with the same prompt won't help — surface as non-retryable so the
+      // workflow's stalled-milestone path can escalate to a human.
+      throw new NonRetryableAgentError(
+        `opencode produced no file changes for ticket ${ticket.id}. summary: ${run.summary}`,
+      );
+    }
+    return { code: run.summary, filesChanged: run.filesChanged };
+  }
+
+  // Legacy path: one-shot LLM dictation with BEGIN FILE / END FILE parsing.
   const suggested = ticket.filesToChange.filter((p) => p && p.trim().length > 0);
   const existingContext = suggested.length > 0
     ? await readFilesForContext(worktreePath, suggested)
@@ -813,36 +999,8 @@ Rules:
       `Developer produced no file edits for ticket ${ticket.id}. Output preview: ${result.slice(0, 500)}`,
     );
   }
-  let applied = await applyFileEdits(worktreePath, edits);
-  let finalCode = result;
-
-  // Self-critique pass: the developer re-reads its own diff before the
-  // reviewer panel sees it. If it finds concrete issues, we run one more
-  // implementation pass with those issues as feedback, then apply those
-  // edits on top. Skip the critique for feedback/testFeedback iterations
-  // (already addressing specific comments — another layer of critique is noise).
-  if (!feedback && !testFeedback) {
-    const critique = await runSelfCritique({
-      ticket, result, projectPath, runId,
-    });
-    if (critique && !critique.selfApproved && critique.issues.length > 0) {
-      const critiqueFeedback = critique.issues.map(
-        (i) => `${i.file}:${i.line ?? '?'} [${i.kind}]: ${i.fix}`,
-      );
-      const retryPrompt = `${prompt}\n\nSELF-CRITIQUE TO ADDRESS:\n${critiqueFeedback.join('\n')}`;
-      const retryResult = await callLLM(persona, retryPrompt, { cwd: worktreePath, agentId, runId });
-      const retryEdits = parseFileEdits(retryResult);
-      if (retryEdits.length > 0) {
-        applied = await applyFileEdits(worktreePath, retryEdits);
-        finalCode = retryResult;
-      }
-      // If the retry produced zero edits, keep the original — the first pass
-      // was at least valid code, and blocking on a bad retry is worse than
-      // letting the reviewer panel catch whatever the critic flagged.
-    }
-  }
-
-  return { code: finalCode, filesChanged: applied };
+  const applied = await applyFileEdits(worktreePath, edits);
+  return { code: result, filesChanged: applied };
 }
 
 /**
@@ -858,6 +1016,14 @@ Rules:
 export async function implementCodeBestOfN(
   input: ImplementInput & { n?: number },
 ): Promise<ImplementOutput> {
+  // Under opencode the inner agent iterates internally — spawning N parallel
+  // candidates would race on the worktree's git index and require per-ticket
+  // sub-worktrees to land safely. Defer that machinery; for now a single
+  // well-resourced opencode run replaces N brittle one-shot candidates.
+  if (await useOpencode()) {
+    return implementCode(input);
+  }
+
   const { ticket, worktreePath, projectPath, feedback, testFeedback, runId } = input;
   const n = Math.max(2, input.n ?? 3);
 
@@ -978,57 +1144,43 @@ Rules:
   return { code: winner.output, filesChanged: applied };
 }
 
-interface CritiqueResult {
-  selfApproved: boolean;
-  issues: Array<{ file: string; line?: number; kind: string; fix: string }>;
-}
-
-async function runSelfCritique(opts: {
-  ticket: ScopedTicket;
-  result: string;
-  projectPath: string;
-  runId?: string;
-}): Promise<CritiqueResult | null> {
-  const { ticket, result, projectPath, runId } = opts;
-  const criticAgentId = 'developer-critic';
-  await notifyAgentStart({ agentId: criticAgentId, agentName: 'Developer (self-critique)', terminalType: 'direct-llm' });
-  try {
-    const criticPersona = await loadPersona(projectPath, 'developer-critic');
-    const critique = await withJsonRetry<CritiqueResult>(
-      (suffix) => callLLM(
-        criticPersona,
-        `Ticket: ${ticket.title}\n${ticket.description}\n\nAcceptance:\n${ticket.acceptanceCriteria.map((c) => `- ${c}`).join('\n')}\n\nCode you just produced:\n${result.slice(0, 20000)}${suffix ?? ''}`,
-        { agentId: criticAgentId, runId },
-      ),
-      {
-        maxAttempts: 2,
-        validate: (v) =>
-          typeof v === 'object' && v !== null
-          && typeof (v as any).selfApproved === 'boolean'
-          && Array.isArray((v as any).issues),
-      },
-    );
-    await notifyAgentComplete({
-      agentId: criticAgentId,
-      status: 'completed',
-      output: critique.selfApproved
-        ? 'self-approved — no issues found'
-        : `${critique.issues.length} issue(s) to address`,
-    });
-    return critique;
-  } catch (e) {
-    await notifyAgentComplete({ agentId: criticAgentId, status: 'error', output: String(e).slice(0, 500) });
-    return null;
-  }
-}
-
 export async function reviewCode(input: ReviewInput & { worktreePath?: string }): Promise<ReviewResult> {
   const { implementation, ticket, worktreePath, agentId, runId } = input;
 
-  // reviewer-correctness now narrowly owns "does the code meet acceptance
-  // criteria?" The full 4-specialist panel lives in reviewCodePanel.
   const persona = await loadPersona(process.cwd(), 'reviewer-correctness');
 
+  if (await useOpencode()) {
+    const promptBody = `
+Review the changes for ticket: ${ticket.title}
+${ticket.description}
+
+ACCEPTANCE CRITERIA:
+${ticket.acceptanceCriteria.map((c) => `- ${c}`).join('\n')}
+
+FILES CHANGED: ${implementation.filesChanged.join(', ')}
+
+Use your read tools to inspect the files listed above.
+Respond with ONLY a JSON object: { "approved": true|false, "comments": ["specific, actionable comment", ...] }
+`;
+    const text = await sendAgentPrompt({
+      runId: runId ?? '',
+      personaKey: agentId ?? 'reviewer-correctness',
+      personaText: persona,
+      userPrompt: promptBody,
+    });
+    return await withJsonRetry<ReviewResult>(
+      () => Promise.resolve(stripThinking(text)),
+      {
+        maxAttempts: 3,
+        validate: (v): v is ReviewResult =>
+          typeof v === 'object' && v !== null
+          && typeof (v as any).approved === 'boolean'
+          && Array.isArray((v as any).comments),
+      },
+    );
+  }
+
+  // Legacy path: pre-fetch file contents, then callLLM.
   const fileContents = worktreePath && implementation.filesChanged.length > 0
     ? await readFilesForContext(worktreePath, implementation.filesChanged)
     : '(no files to read)';
@@ -1076,6 +1228,103 @@ export async function reviewCodePanel(input: PanelReviewInput): Promise<PanelRev
 
   const panelPrompts = await loadPanel(process.cwd(), 'reviewer', REVIEWER_SPECIALISTS);
 
+  if (await useOpencode()) {
+    const sharedPromptBody = `
+Ticket: ${ticket.title}
+${ticket.description}
+
+ACCEPTANCE CRITERIA:
+${ticket.acceptanceCriteria.map((c) => `- ${c}`).join('\n')}
+
+FILES CHANGED: ${implementation.filesChanged.join(', ')}
+
+Use your read tools to inspect the changed files. Evaluate strictly within your specialist scope. Respond with JSON only.
+`;
+
+    const verdicts = await Promise.all(
+      REVIEWER_SPECIALISTS.map(async (specialist) => {
+        const agentId = `reviewer-${specialist}`;
+        await notifyAgentStart({ agentId, agentName: `Reviewer (${specialist})`, terminalType: 'direct-llm' });
+        try {
+          const text = await sendAgentPrompt({
+            runId: runId ?? '',
+            personaKey: agentId,
+            personaText: panelPrompts[specialist],
+            userPrompt: sharedPromptBody,
+          });
+          const verdict = await withJsonRetry<Record<string, unknown>>(
+            () => Promise.resolve(text),
+            {
+              maxAttempts: 3,
+              validate: (v) => typeof v === 'object' && v !== null && 'approved' in (v as object),
+            },
+          );
+          await notifyAgentComplete({ agentId, status: 'completed', output: JSON.stringify(verdict).slice(0, 500) });
+          return [specialist, verdict] as const;
+        } catch (e) {
+          await notifyAgentComplete({ agentId, status: 'error', output: String(e).slice(0, 500) });
+          return [specialist, { approved: false, error: String(e) }] as const;
+        }
+      }),
+    );
+    const rawVerdicts = Object.fromEntries(verdicts) as Record<ReviewerSpecialist, Record<string, unknown>>;
+
+    const synthPersona = await loadPersona(process.cwd(), 'reviewer-synthesizer');
+    const synthAgentId = 'reviewer-synthesizer';
+    await notifyAgentStart({ agentId: synthAgentId, agentName: 'Reviewer Synthesizer', terminalType: 'direct-llm' });
+    type Synth = { approved: boolean; blockers: Array<{ from?: string; detail?: string } | string>; advisories: Array<{ from?: string; detail?: string } | string>; summary: string };
+    try {
+      const synthText = await sendAgentPrompt({
+        runId: runId ?? '',
+        personaKey: synthAgentId,
+        personaText: synthPersona,
+        userPrompt: `Panel verdicts:\n${JSON.stringify(rawVerdicts, null, 2)}`,
+      });
+      const synth = await withJsonRetry<Synth>(
+        () => Promise.resolve(synthText),
+        {
+          maxAttempts: 3,
+          validate: (v) =>
+            typeof v === 'object' && v !== null
+            && typeof (v as any).approved === 'boolean'
+            && Array.isArray((v as any).blockers)
+            && Array.isArray((v as any).advisories),
+        },
+      );
+      await notifyAgentComplete({ agentId: synthAgentId, status: 'completed', output: JSON.stringify(synth).slice(0, 500) });
+      const normalize = (e: { from?: string; detail?: string } | string, fallbackFrom: string) =>
+        typeof e === 'string' ? { from: fallbackFrom, detail: e } : { from: e.from ?? fallbackFrom, detail: e.detail ?? '' };
+      return {
+        approved: synth.approved,
+        blockers: (synth.blockers ?? []).map((b) => normalize(b, synthAgentId)),
+        advisories: (synth.advisories ?? []).map((a) => normalize(a, synthAgentId)),
+        comments: [
+          ...(synth.blockers ?? []).map((b) => normalize(b, synthAgentId).detail),
+          ...(synth.advisories ?? []).map((a) => normalize(a, synthAgentId).detail),
+        ],
+        summary: synth.summary ?? '',
+        rawVerdicts,
+      };
+    } catch {
+      await notifyAgentComplete({ agentId: synthAgentId, status: 'error', output: 'synthesis failed' });
+      const allApproved = Object.values(rawVerdicts).every((v) => (v as any).approved === true);
+      const allComments = Object.entries(rawVerdicts).flatMap(([from, v]) =>
+        Array.isArray((v as any).comments)
+          ? (v as any).comments.map((c: string) => ({ from, detail: c }))
+          : [],
+      );
+      return {
+        approved: allApproved,
+        blockers: allApproved ? [] : allComments,
+        advisories: allApproved ? allComments : [],
+        comments: allComments.map((c) => c.detail),
+        summary: '',
+        rawVerdicts,
+      };
+    }
+  }
+
+  // Legacy path continues unchanged below...
   const fileContents = worktreePath && implementation.filesChanged.length > 0
     ? await readFilesForContext(worktreePath, implementation.filesChanged)
     : '(no files to read)';
@@ -1495,4 +1744,41 @@ export async function resolveMilestone(
   decision: { verdict: string; reason?: string; decidedBy: string }
 ): Promise<void> {
   console.log('resolveMilestone', milestoneId, decision);
+}
+
+const OPENCODE_BACKEND = process.env.ATELIER_BACKEND_URL || 'http://localhost:3001';
+
+export async function startRunOpencode(input: { runId: string; worktreePath: string }): Promise<void> {
+  const response = await fetch(`${OPENCODE_BACKEND}/api/opencode/run/${encodeURIComponent(input.runId)}/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ worktreePath: input.worktreePath }),
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`Failed to start opencode serve for run ${input.runId}: HTTP ${response.status} ${text.slice(0, 200)}`);
+  }
+}
+
+export async function stopRunOpencode(input: { runId: string }): Promise<void> {
+  // Best-effort: failure here is non-fatal, the cleanup just leaks a subprocess
+  // until the backend exits. Don't throw.
+  try {
+    await fetch(`${OPENCODE_BACKEND}/api/opencode/run/${encodeURIComponent(input.runId)}/stop`, {
+      method: 'POST',
+    });
+  } catch {
+    // Backend unreachable — caller has nothing useful to do.
+  }
+}
+
+// Workflow code can't read process.env or call fetch directly. Expose the
+// flag resolver as an activity so the workflow can branch on it.
+export async function useOpencodeForRun(): Promise<boolean> {
+  return useOpencode();
+}
+
+export async function bootstrapOpencodeWorktree(input: { worktreePath: string }): Promise<void> {
+  const provider = await getPrimaryProvider();
+  await writeOpencodeConfig(input.worktreePath, provider);
 }

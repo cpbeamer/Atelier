@@ -6,21 +6,37 @@ import { CURATED_PROVIDERS, type ProviderKind } from './providers/registry.js';
 
 const DB_PATH = path.join(process.env.HOME || '', '.atelier', 'db', 'atelier.sqlite');
 
-let db: Database;
+let db: Database | null = null;
 
-export function getDb(): Database {
-  if (!db) {
-    const dir = path.dirname(DB_PATH);
+/**
+ * Initialize the SQLite connection. Safe to call multiple times — passing a
+ * different path replaces the existing connection (useful for tests with
+ * `':memory:'`). When no override is given, falls back to the default
+ * on-disk path. Most callers should rely on lazy init via `getDb()`.
+ */
+export function initDb(pathOverride?: string): Database {
+  const dbPath = pathOverride ?? DB_PATH;
+  if (dbPath !== ':memory:') {
+    const dir = path.dirname(dbPath);
     fs.mkdirSync(dir, { recursive: true });
-    db = new Database(DB_PATH);
-    db.run('PRAGMA journal_mode = WAL');
-    migrate();
   }
+  db = new Database(dbPath);
+  if (dbPath !== ':memory:') {
+    db.run('PRAGMA journal_mode = WAL');
+  }
+  migrate();
   return db;
 }
 
+export function getDb(): Database {
+  if (!db) {
+    initDb();
+  }
+  return db!;
+}
+
 function migrate() {
-  db.exec(`
+  db!.exec(`
     CREATE TABLE IF NOT EXISTS projects (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -94,6 +110,12 @@ function migrate() {
       context_json TEXT NOT NULL DEFAULT '{}',
       updated_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
   `);
 
   // Idempotent ALTER TABLE additions. SQLite ADD COLUMN isn't guarded by
@@ -104,7 +126,7 @@ function migrate() {
     `ALTER TABLE model_config ADD COLUMN is_custom INTEGER NOT NULL DEFAULT 0`,
     `ALTER TABLE model_config ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0`,
   ]) {
-    try { db.exec(ddl); } catch { /* column already exists */ }
+    try { db!.exec(ddl); } catch { /* column already exists */ }
   }
 
   syncProvidersFromRegistry();

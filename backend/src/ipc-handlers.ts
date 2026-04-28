@@ -1,5 +1,6 @@
 // backend/src/ipc-handlers.ts
 import { projects, runs, milestones, modelConfig } from './db.js';
+import { appSettings } from './app-settings.js';
 import { ptyManager } from './pty-manager.js';
 import { createWorktree, removeWorktree } from './worktree.js';
 import { startSidecar, stopSidecar, getSidecarStatus } from './sidecar-lifecycle.js';
@@ -202,6 +203,18 @@ register('settings.modelConfig:remove', async (opts: { id: string }) => {
       keytar.deletePassword(SERVICE_NAME, keychainKey(opts.id, 'apiKey'))
     );
   } catch { /* keyring unavailable — non-fatal */ }
+});
+
+register('settings.useOpencode:get', async () => {
+  return { useOpencode: appSettings.getBool('useOpencode', false) };
+});
+
+register('settings.useOpencode:set', async (opts: { useOpencode: boolean }) => {
+  if (typeof opts?.useOpencode !== 'boolean') {
+    throw new Error('useOpencode must be a boolean');
+  }
+  appSettings.set('useOpencode', opts.useOpencode ? 'true' : 'false');
+  return { ok: true };
 });
 
 register('settings.apiKey:get', async (opts: { providerId: string }) => {

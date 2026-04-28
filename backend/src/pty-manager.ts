@@ -30,7 +30,13 @@ class PtyManager {
 
   private static OUTPUT_TAIL_BYTES = 4000;
 
-  spawn(id: string, command: string, args: string[], cwd?: string): PtyInstance {
+  spawn(
+    id: string,
+    command: string,
+    args: string[],
+    cwd?: string,
+    env?: Record<string, string>,
+  ): PtyInstance {
     if (this.instances.has(id)) {
       this.kill(id);
     }
@@ -38,25 +44,32 @@ class PtyManager {
     this.exitStates.delete(id);
     this.recentOutput.set(id, '');
 
-    const process = pty.spawn(command, args, {
+    // Merge caller-provided env on top of the worker's own — lets callers inject
+    // per-spawn secrets (e.g. ATELIER_OPENCODE_API_KEY) without leaking them
+    // into the long-lived backend process.env.
+    const mergedEnv = env
+      ? { ...(process.env as Record<string, string>), ...env }
+      : (process.env as Record<string, string>);
+
+    const proc = pty.spawn(command, args, {
       name: 'xterm-256color',
       cols: 80,
       rows: 24,
       cwd: cwd || process.cwd(),
-      env: process.env as Record<string, string>,
+      env: mergedEnv,
     });
 
     const instance: PtyInstance = {
       id,
-      process,
-      write: (data) => process.write(data),
-      resize: (cols, rows) => process.resize(cols, rows),
-      kill: () => process.kill(),
+      process: proc,
+      write: (data) => proc.write(data),
+      resize: (cols, rows) => proc.resize(cols, rows),
+      kill: () => proc.kill(),
     };
 
     this.instances.set(id, instance);
 
-    process.onData((data) => {
+    proc.onData((data) => {
       this.emitter.emit(`data:${id}`, data);
       // Keep a sliding-window tail for exit diagnostics.
       const prev = this.recentOutput.get(id) ?? '';
@@ -67,7 +80,7 @@ class PtyManager {
       this.recentOutput.set(id, tail);
     });
 
-    process.onExit(({ exitCode, signal }) => {
+    proc.onExit(({ exitCode, signal }) => {
       const code = exitCode ?? 0;
       const sig = signal ?? 0;
       this.exitStates.set(id, {

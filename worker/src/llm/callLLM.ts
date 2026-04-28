@@ -36,7 +36,7 @@ async function emitAgentEvent(id: string, event: { kind: string; [k: string]: an
   } catch { /* backend not reachable — non-fatal */ }
 }
 
-async function getPrimaryProvider(): Promise<PrimaryProvider> {
+export async function getPrimaryProvider(): Promise<PrimaryProvider> {
   // Env-var override: lets the worker run standalone without a backend.
   if (process.env.MINIMAX_API_KEY && !process.env.ATELIER_BACKEND_URL) {
     return {
@@ -59,7 +59,7 @@ async function getPrimaryProvider(): Promise<PrimaryProvider> {
   return await response.json() as PrimaryProvider;
 }
 
-async function getApiKey(providerId: string, kind: ProviderKind): Promise<string> {
+export async function getApiKey(providerId: string, kind: ProviderKind): Promise<string> {
   // Per-provider env-var fallbacks make local development painless.
   const envName =
     kind === 'minimax'   ? 'MINIMAX_API_KEY' :
