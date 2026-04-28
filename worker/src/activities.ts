@@ -442,7 +442,7 @@ export async function researchRepo(input: ResearchInput): Promise<ResearchOutput
         });
         const out = await withJsonRetry<Record<string, unknown>>(
           () => Promise.resolve(text),
-          { maxAttempts: 1, validate: (v) => typeof v === 'object' && v !== null },
+          { maxAttempts: 3, validate: (v) => typeof v === 'object' && v !== null },
         );
         await notifyAgentComplete({ agentId, status: 'completed', output: JSON.stringify(out).slice(0, 500) });
         return [specialist, out] as const;
@@ -465,7 +465,7 @@ export async function researchRepo(input: ResearchInput): Promise<ResearchOutput
       return await withJsonRetry<ResearchOutput>(
         () => Promise.resolve(synthText),
         {
-          maxAttempts: 1,
+          maxAttempts: 3,
           validate: (v): v is ResearchOutput =>
             typeof v === 'object' && v !== null
             && typeof (v as any).repoStructure === 'string'
@@ -622,7 +622,7 @@ For EACH feature, provide your specialist-scoped assessment in the JSON shape yo
         const out = await withJsonRetry<Record<string, unknown>>(
           () => Promise.resolve(text),
           {
-            maxAttempts: 1,
+            maxAttempts: 3,
             validate: (v) => typeof v === 'object' && v !== null && 'assessments' in (v as object),
           },
         );
@@ -649,7 +649,7 @@ For EACH feature, provide your specialist-scoped assessment in the JSON shape yo
     const reconcileResult = await withJsonRetry<DebateOutput>(
       () => Promise.resolve(reconcileText),
       {
-        maxAttempts: 1,
+        maxAttempts: 3,
         validate: (v): v is DebateOutput =>
           typeof v === 'object' && v !== null
           && Array.isArray((v as any).approvedFeatures)
@@ -741,7 +741,7 @@ Respond ONLY with valid JSON array of tickets.
     const tickets = await withJsonRetry<Ticket[]>(
       () => Promise.resolve(text),
       {
-        maxAttempts: 1,
+        maxAttempts: 3,
         validate: (v): v is Ticket[] =>
           Array.isArray(v)
           && v.every((t) => typeof t === 'object' && t !== null && 'id' in t && 'title' in t && 'acceptanceCriteria' in t),
@@ -813,7 +813,7 @@ Be specific. Generic plans are useless. Respond with ONLY a JSON array, one entr
       const chosen = await withJsonRetry<ArchitectEntry[]>(
         () => Promise.resolve(text),
         {
-          maxAttempts: 1,
+          maxAttempts: 3,
           validate: (v) => Array.isArray(v) && v.length === tickets.length,
         },
       );
@@ -1171,7 +1171,7 @@ Respond with ONLY a JSON object: { "approved": true|false, "comments": ["specifi
     return await withJsonRetry<ReviewResult>(
       () => Promise.resolve(stripThinking(text)),
       {
-        maxAttempts: 1,
+        maxAttempts: 3,
         validate: (v): v is ReviewResult =>
           typeof v === 'object' && v !== null
           && typeof (v as any).approved === 'boolean'
@@ -1255,7 +1255,7 @@ Use your read tools to inspect the changed files. Evaluate strictly within your 
           const verdict = await withJsonRetry<Record<string, unknown>>(
             () => Promise.resolve(text),
             {
-              maxAttempts: 1,
+              maxAttempts: 3,
               validate: (v) => typeof v === 'object' && v !== null && 'approved' in (v as object),
             },
           );
@@ -1283,7 +1283,7 @@ Use your read tools to inspect the changed files. Evaluate strictly within your 
       const synth = await withJsonRetry<Synth>(
         () => Promise.resolve(synthText),
         {
-          maxAttempts: 1,
+          maxAttempts: 3,
           validate: (v) =>
             typeof v === 'object' && v !== null
             && typeof (v as any).approved === 'boolean'
