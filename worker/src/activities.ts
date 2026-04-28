@@ -203,6 +203,7 @@ import { runOpenCodeAgent } from './llm/opencodeAgent.js';
 import { useOpencode } from './llm/featureFlags.js';
 import { sendAgentPrompt } from './llm/opencodeServeClient.js';
 import { writeOpencodeConfig } from './llm/opencodeConfig.js';
+import { BackgroundManager } from './subagent/index.js';
 
 async function readFile(filePath: string): Promise<string> {
   return fs.promises.readFile(filePath, 'utf-8');
@@ -225,6 +226,8 @@ function execCmd(command: string, args: string[], cwd?: string, timeoutMs = 60 *
     proc.on('exit', (code) => { clearTimeout(timer); resolve({ code: code ?? 0, stdout, stderr }); });
   });
 }
+
+const bgManager = BackgroundManager.getInstance();
 
 // M2.7 wraps reasoning in <think>...</think> tags; strip these before parsing
 // structured output so hidden content never smuggles through file-edit markers
@@ -452,9 +455,67 @@ export async function researchRepo(input: ResearchInput): Promise<ResearchOutput
       }
     }));
 
+    // NEW: Librarian + Explorer in parallel with researchers
+    const librarianPersona = await loadPersona(process.cwd(), 'librarian');
+    const explorerPersona = await loadPersona(process.cwd(), 'explorer');
+    const librarianAgentId = 'librarian';
+    const explorerAgentId = 'explorer';
+
+    await notifyAgentStart({ agentId: librarianAgentId, agentName: 'Librarian', terminalType: 'direct-llm' });
+    await notifyAgentStart({ agentId: explorerAgentId, agentName: 'Explorer', terminalType: 'direct-llm' });
+
+    const [librarianResult, explorerResult] = await Promise.all([
+      (async () => {
+        if (await useOpencode()) {
+          const text = await sendAgentPrompt({
+            runId: runId ?? '',
+            personaKey: librarianAgentId,
+            personaText: librarianPersona,
+            userPrompt: `Analyze this codebase for documentation gaps, outdated docs, and missing API references.\n\n${baseContext}`,
+          });
+          const out = await withJsonRetry<Record<string, unknown>>(
+            () => Promise.resolve(text),
+            { maxAttempts: 3, validate: (v) => typeof v === 'object' && v !== null },
+          );
+          await notifyAgentComplete({ agentId: librarianAgentId, status: 'completed', output: JSON.stringify(out).slice(0, 500) });
+          return out;
+        } else {
+          const out = await withJsonRetry<Record<string, unknown>>(
+            (suffix) => callLLM(librarianPersona, `${baseContext}${suffix ?? ''}`, { cwd: projectPath, agentId: librarianAgentId, runId }),
+            { maxAttempts: 2, validate: (v) => typeof v === 'object' && v !== null },
+          );
+          await notifyAgentComplete({ agentId: librarianAgentId, status: 'completed', output: JSON.stringify(out).slice(0, 500) });
+          return out;
+        }
+      })(),
+      (async () => {
+        if (await useOpencode()) {
+          const text = await sendAgentPrompt({
+            runId: runId ?? '',
+            personaKey: explorerAgentId,
+            personaText: explorerPersona,
+            userPrompt: `Map the codebase structure rapidly. Identify main entry points, key modules, and architectural patterns.\n\n${baseContext}`,
+          });
+          const out = await withJsonRetry<Record<string, unknown>>(
+            () => Promise.resolve(text),
+            { maxAttempts: 3, validate: (v) => typeof v === 'object' && v !== null },
+          );
+          await notifyAgentComplete({ agentId: explorerAgentId, status: 'completed', output: JSON.stringify(out).slice(0, 500) });
+          return out;
+        } else {
+          const out = await withJsonRetry<Record<string, unknown>>(
+            (suffix) => callLLM(explorerPersona, `${baseContext}${suffix ?? ''}`, { cwd: projectPath, agentId: explorerAgentId, runId }),
+            { maxAttempts: 2, validate: (v) => typeof v === 'object' && v !== null },
+          );
+          await notifyAgentComplete({ agentId: explorerAgentId, status: 'completed', output: JSON.stringify(out).slice(0, 500) });
+          return out;
+        }
+      })(),
+    ]);
+
     const specialistFindings = Object.fromEntries(fragments) as Record<ResearcherSpecialist, Record<string, unknown>>;
     const synthPersona = await loadPersona(process.cwd(), 'researcher-synthesizer');
-    const synthPrompt = `User context: ${JSON.stringify(userContext)}\n\nSpecialist findings:\n${JSON.stringify(specialistFindings, null, 2)}`;
+    const synthPrompt = `User context: ${JSON.stringify(userContext)}\n\nSpecialist findings:\n${JSON.stringify(specialistFindings, null, 2)}\n\nLibrarian findings:\n${JSON.stringify(librarianResult, null, 2)}\n\nExplorer findings:\n${JSON.stringify(explorerResult, null, 2)}`;
     try {
       const synthText = await sendAgentPrompt({
         runId: runId ?? '',
@@ -1241,8 +1302,61 @@ FILES CHANGED: ${implementation.filesChanged.join(', ')}
 Use your read tools to inspect the changed files. Evaluate strictly within your specialist scope. Respond with JSON only.
 `;
 
-    const verdicts = await Promise.all(
-      REVIEWER_SPECIALISTS.map(async (specialist) => {
+    // NEW: Oracle architecture consultation in parallel with reviewer panel
+    const oraclePersona = await loadPersona(process.cwd(), 'oracle');
+    const oracleAgentId = 'oracle';
+    await notifyAgentStart({ agentId: oracleAgentId, agentName: 'Oracle', terminalType: 'direct-llm' });
+
+    const oraclePromise = (async () => {
+      try {
+        const text = await sendAgentPrompt({
+          runId: runId ?? '',
+          personaKey: oracleAgentId,
+          personaText: oraclePersona,
+          userPrompt: sharedPromptBody,
+        });
+        const out = await withJsonRetry<Record<string, unknown>>(
+          () => Promise.resolve(text),
+          { maxAttempts: 3, validate: (v) => typeof v === 'object' && v !== null },
+        );
+        await notifyAgentComplete({ agentId: oracleAgentId, status: 'completed', output: JSON.stringify(out).slice(0, 500) });
+        return out;
+      } catch (e) {
+        await notifyAgentComplete({ agentId: oracleAgentId, status: 'error', output: String(e).slice(0, 500) });
+        return { approved: false, error: String(e) };
+      }
+    })();
+
+    const verdictsPromiseAll = REVIEWER_SPECIALISTS.map(async (specialist) => {
+      const agentId = `reviewer-${specialist}`;
+      await notifyAgentStart({ agentId, agentName: `Reviewer (${specialist})`, terminalType: 'direct-llm' });
+      try {
+        const text = await sendAgentPrompt({
+          runId: runId ?? '',
+          personaKey: agentId,
+          personaText: panelPrompts[specialist],
+          userPrompt: sharedPromptBody,
+        });
+        const verdict = await withJsonRetry<Record<string, unknown>>(
+          () => Promise.resolve(text),
+          {
+            maxAttempts: 3,
+            validate: (v) => typeof v === 'object' && v !== null && 'approved' in (v as object),
+          },
+        );
+        await notifyAgentComplete({ agentId, status: 'completed', output: JSON.stringify(verdict).slice(0, 500) });
+        return [specialist, verdict] as const;
+      } catch (e) {
+        await notifyAgentComplete({ agentId, status: 'error', output: String(e).slice(0, 500) });
+        return [specialist, { approved: false, error: String(e) }] as const;
+      }
+    });
+
+    const verdicts = await Promise.all([oraclePromise, ...verdictsPromiseAll]);
+    const oracleResult = verdicts[0] as Record<string, unknown>;
+    const rawVerdicts = Object.fromEntries(
+      REVIEWER_SPECIALISTS.map((specialist, i) => [specialist, verdicts[i + 1]])
+    ) as Record<ReviewerSpecialist, Record<string, unknown>>;
         const agentId = `reviewer-${specialist}`;
         await notifyAgentStart({ agentId, agentName: `Reviewer (${specialist})`, terminalType: 'direct-llm' });
         try {
@@ -1278,7 +1392,7 @@ Use your read tools to inspect the changed files. Evaluate strictly within your 
         runId: runId ?? '',
         personaKey: synthAgentId,
         personaText: synthPersona,
-        userPrompt: `Panel verdicts:\n${JSON.stringify(rawVerdicts, null, 2)}`,
+        userPrompt: `Panel verdicts:\n${JSON.stringify(rawVerdicts, null, 2)}\n\nOracle architecture review:\n${JSON.stringify(oracleResult, null, 2)}`,
       });
       const synth = await withJsonRetry<Synth>(
         () => Promise.resolve(synthText),
