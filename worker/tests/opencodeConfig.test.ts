@@ -77,6 +77,11 @@ describe('buildOpencodeConfig', () => {
       webfetch: 'allow',
     });
   });
+
+  test('global opencode plugins are disabled for unattended serve sessions', () => {
+    const cfg = buildOpencodeConfig(provider());
+    expect(cfg.plugin).toEqual([]);
+  });
 });
 
 describe('writeOpencodeConfig', () => {
@@ -86,6 +91,7 @@ describe('writeOpencodeConfig', () => {
     const written = JSON.parse(readFileSync(join(dir, 'opencode.json'), 'utf-8'));
     expect(written.provider.primary.npm).toBe('@ai-sdk/openai-compatible');
     expect(written.model).toBe('primary/MiniMax-M2.7');
+    expect(written.plugin).toEqual([]);
     expect(written.permission).toEqual({ edit: 'allow', bash: 'allow', webfetch: 'allow' });
   });
 });
