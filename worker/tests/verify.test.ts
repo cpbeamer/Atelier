@@ -1,6 +1,6 @@
-import { describe, test, expect } from 'bun:test';
-import { detectVerifyCommands } from '../src/verify';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { runVerify, detectVerifyCommands } from '../src/verify';
+import { mkdtempSync, writeFileSync, mkdirSync, writeFile } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -56,5 +56,47 @@ describe('detectVerifyCommands', () => {
     const labels = cmds.map((c) => c.label);
     expect(labels).toContain('lint');
     expect(labels).toContain('typecheck');
+  });
+
+  test('pyproject.toml with ruff but not mypy produces only lint', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'verify-'));
+    writeFileSync(join(dir, 'pyproject.toml'), '[tool.ruff]\n');
+    const cmds = detectVerifyCommands(dir);
+    const labels = cmds.map((c) => c.label);
+    expect(labels).toContain('lint');
+    expect(labels).not.toContain('typecheck');
+  });
+});
+
+describe('runVerify', () => {
+  const ORIGINAL_SPAWN = import.meta.require?.('node:child_process')?.spawn;
+
+  afterEach(() => {
+    // clean up any mocks
+  });
+
+  test('returns allPassed=true with empty results when no commands detected', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'verify-'));
+    const result = await runVerify(dir, 5000);
+    expect(result.allPassed).toBe(true);
+    expect(result.results).toEqual([]);
+  });
+
+  test('runVerify returns failed result when typecheck fails', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'verify-'));
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { typecheck: 'exit 1' } }));
+
+    const result = await runVerify(dir, 5000);
+    expect(result.allPassed).toBe(false);
+    expect(result.results.length).toBeGreaterThan(0);
+    const typecheckResult = result.results.find((r) => r.label === 'typecheck');
+    expect(typecheckResult?.passed).toBe(false);
+  });
+
+  test('runVerify returns allPassed when no commands detected', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'verify-'));
+    const result = await runVerify(dir, 5000);
+    expect(result.allPassed).toBe(true);
+    expect(result.results).toEqual([]);
   });
 });

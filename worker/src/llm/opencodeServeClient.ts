@@ -110,7 +110,7 @@ function buildClient(info: ServeRunInfo) {
 /** Parse "primary/MiniMax-M2.7" into { providerID: "primary", modelID: "MiniMax-M2.7" }.
  *  Returns null when the input doesn't contain the expected separator — caller
  *  then falls back to whatever opencode.json's default `model` is set to. */
-function parseModelRef(model: string | undefined): { providerID: string; modelID: string } | null {
+export function parseModelRef(model: string | undefined): { providerID: string; modelID: string } | null {
   if (!model) return null;
   const slash = model.indexOf('/');
   if (slash <= 0 || slash === model.length - 1) return null;
