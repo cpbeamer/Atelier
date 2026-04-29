@@ -2,7 +2,12 @@ import { test, expect, afterAll } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { startOpencodeServer, stopOpencodeServer, getOpencodeServer } from '../../src/opencode/lifecycle.js';
+import {
+  buildOpencodeServeEnv,
+  startOpencodeServer,
+  stopOpencodeServer,
+  getOpencodeServer,
+} from '../../src/opencode/lifecycle.js';
 import { bootstrapWorktree } from '../../src/opencode/bootstrap.js';
 import { ALL_PERSONAS } from '../../src/opencode/personas.js';
 import { runRegistry } from '../../src/opencode/run-registry.js';
@@ -36,6 +41,22 @@ test('startOpencodeServer spawns serve and exposes a healthy port', async () => 
   });
   expect(res.status).toBe(200);
 }, 30_000);
+
+test('buildOpencodeServeEnv isolates global config and passes local config content', () => {
+  const wt = path.join(tmp, 'env-wt');
+  fs.mkdirSync(wt, { recursive: true });
+  fs.writeFileSync(path.join(wt, 'opencode.json'), JSON.stringify({ plugin: [], permission: { bash: 'allow' } }));
+
+  const env = buildOpencodeServeEnv(wt, 'pw', { ATELIER_OPENCODE_API_KEY: 'key' });
+
+  expect(env.OPENCODE_SERVER_PASSWORD).toBe('pw');
+  expect(env.ATELIER_OPENCODE_API_KEY).toBe('key');
+  expect(env.XDG_CONFIG_HOME).toBe(path.join(wt, '.atelier', 'opencode-config-home'));
+  expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT || '{}')).toEqual({
+    plugin: [],
+    permission: { bash: 'allow' },
+  });
+});
 
 test('getOpencodeServer returns the registered entry', () => {
   const entry = getOpencodeServer('run-life-1');

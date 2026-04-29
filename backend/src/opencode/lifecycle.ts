@@ -1,5 +1,8 @@
 import { spawn, ChildProcess } from 'node:child_process';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import net from 'node:net';
+import path from 'node:path';
 import { runRegistry, type RunEntry } from './run-registry.js';
 
 const STARTUP_TIMEOUT_MS = 15_000;
@@ -7,20 +10,60 @@ const STARTUP_TIMEOUT_MS = 15_000;
 const PORT_REGEX = /https?:\/\/127\.0\.0\.1:(\d+)/;
 const processes = new Map<string, ChildProcess>();
 
+async function findFreePort(): Promise<number> {
+  return await new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        server.close(() => reject(new Error('failed to allocate local port')));
+        return;
+      }
+      const port = address.port;
+      server.close((err) => err ? reject(err) : resolve(port));
+    });
+  });
+}
+
+export function buildOpencodeServeEnv(
+  worktreePath: string,
+  password: string,
+  extraEnv: Record<string, string> = {},
+): NodeJS.ProcessEnv {
+  const configPath = path.join(worktreePath, 'opencode.json');
+  const isolatedConfigHome = path.join(worktreePath, '.atelier', 'opencode-config-home');
+  fs.mkdirSync(path.join(isolatedConfigHome, 'opencode'), { recursive: true });
+
+  const configContent = fs.existsSync(configPath)
+    ? fs.readFileSync(configPath, 'utf-8')
+    : '{}';
+
+  return {
+    ...process.env,
+    ...extraEnv,
+    XDG_CONFIG_HOME: isolatedConfigHome,
+    OPENCODE_CONFIG_CONTENT: configContent,
+    OPENCODE_SERVER_PASSWORD: password,
+  };
+}
+
 export async function startOpencodeServer(
   runId: string,
   worktreePath: string,
+  extraEnv: Record<string, string> = {},
 ): Promise<{ port: number; password: string }> {
   if (runRegistry.get(runId)) {
     throw new Error(`opencode server already running for ${runId}`);
   }
   const password = crypto.randomBytes(32).toString('hex');
+  const requestedPort = await findFreePort();
   const child = spawn(
     'opencode',
-    ['serve', '--port', '0', '--hostname', '127.0.0.1'],
+    ['serve', '--port', String(requestedPort), '--hostname', '127.0.0.1'],
     {
       cwd: worktreePath,
-      env: { ...process.env, OPENCODE_SERVER_PASSWORD: password },
+      env: buildOpencodeServeEnv(worktreePath, password, extraEnv),
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   );
@@ -45,7 +88,7 @@ export async function startOpencodeServer(
     child.stderr?.on('data', onLine);
     child.on('exit', (code) => {
       clearTimeout(timer);
-      reject(new Error(`opencode serve exited with code ${code} before startup`));
+      reject(new Error(`opencode serve exited with code ${code} before startup${buf.trim() ? `: ${buf.trim().slice(-1000)}` : ''}`));
     });
   });
 

@@ -26,6 +26,7 @@ const NPM_PACKAGE_FOR_KIND: Record<ProviderKind, string> = {
 
 export interface OpencodeConfigShape {
   $schema: string;
+  plugin: [];
   provider: Record<string, {
     npm: string;
     name: string;
@@ -33,6 +34,11 @@ export interface OpencodeConfigShape {
     models: Record<string, { name: string }>;
   }>;
   model: string;
+  permission: {
+    edit: 'allow';
+    bash: 'allow';
+    webfetch: 'allow';
+  };
 }
 
 export function buildOpencodeConfig(provider: PrimaryProvider): OpencodeConfigShape {
@@ -40,6 +46,7 @@ export function buildOpencodeConfig(provider: PrimaryProvider): OpencodeConfigSh
   const model = provider.selectedModel ?? 'default';
   return {
     $schema: 'https://opencode.ai/config.json',
+    plugin: [],
     provider: {
       primary: {
         npm,
@@ -54,6 +61,11 @@ export function buildOpencodeConfig(provider: PrimaryProvider): OpencodeConfigSh
       },
     },
     model: `primary/${model}`,
+    permission: {
+      edit: 'allow',
+      bash: 'allow',
+      webfetch: 'allow',
+    },
   };
 }
 

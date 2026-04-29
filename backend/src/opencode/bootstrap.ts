@@ -11,6 +11,8 @@ export interface BootstrapOptions {
 
 const DEFAULT_PERSONAS_DIR = path.resolve(import.meta.dir, '..', '..', '..', 'worker', 'src', '.atelier', 'agents');
 const MODEL_ID = 'minimax/abab6.5s-chat';
+const DEFAULT_BASE_URL = 'https://api.minimax.io/v1';
+const DEFAULT_MODEL = 'MiniMax-M2.7';
 
 const PERSONA_DESCRIPTIONS: Record<Persona, string> = {
   researcher:      'Reads the project and reports structure, features, gaps, and opportunities',
@@ -30,7 +32,21 @@ export async function bootstrapWorktree(opts: BootstrapOptions): Promise<void> {
 
   const config = {
     $schema: 'https://opencode.ai/config.json',
-    provider: { minimax: { options: { apiKey: opts.miniMaxApiKey } } },
+    plugin: [],
+    provider: {
+      primary: {
+        npm: '@ai-sdk/openai-compatible',
+        name: 'Atelier Primary (MiniMax)',
+        options: {
+          baseURL: DEFAULT_BASE_URL,
+          apiKey: opts.miniMaxApiKey,
+        },
+        models: {
+          [DEFAULT_MODEL]: { name: DEFAULT_MODEL },
+        },
+      },
+    },
+    model: `primary/${DEFAULT_MODEL}`,
     permission: { edit: 'allow', bash: 'allow', webfetch: 'allow' },
   };
   fs.writeFileSync(path.join(opts.worktreePath, 'opencode.json'), JSON.stringify(config, null, 2));

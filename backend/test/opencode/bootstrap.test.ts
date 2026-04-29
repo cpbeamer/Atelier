@@ -22,7 +22,11 @@ test('writes opencode.json with provider and permission blocks', async () => {
   fs.mkdirSync(wt, { recursive: true });
   await bootstrapWorktree({ worktreePath: wt, miniMaxApiKey: 'sk-test', personasSourceDir: personasSrc });
   const cfg = JSON.parse(fs.readFileSync(path.join(wt, 'opencode.json'), 'utf-8'));
-  expect(cfg.provider.minimax.options.apiKey).toBe('sk-test');
+  expect(cfg.plugin).toEqual([]);
+  expect(cfg.provider.primary.npm).toBe('@ai-sdk/openai-compatible');
+  expect(cfg.provider.primary.options.apiKey).toBe('sk-test');
+  expect(cfg.provider.primary.options.baseURL).toBe('https://api.minimax.io/v1');
+  expect(cfg.model).toBe('primary/MiniMax-M2.7');
   expect(cfg.permission.edit).toBe('allow');
   expect(cfg.permission.bash).toBe('allow');
   expect(cfg.permission.webfetch).toBe('allow');

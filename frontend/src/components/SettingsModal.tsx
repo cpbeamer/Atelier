@@ -26,6 +26,26 @@ interface CustomDraft {
   models: string;
 }
 
+interface PreflightResult {
+  ok: boolean;
+  checks: Array<{ id: string; label: string; ok: boolean; detail?: string; required: boolean }>;
+}
+
+type AgentRuntimeId = 'opencode' | 'claude-code' | 'direct-llm';
+
+interface AgentRuntimeOption {
+  id: AgentRuntimeId;
+  label: string;
+  description: string;
+  capabilities: {
+    structuredSessions: boolean;
+    terminalAgent: boolean;
+    editsFiles: boolean;
+    tokenTelemetry: boolean;
+    runService: boolean;
+  };
+}
+
 const EMPTY_DRAFT: CustomDraft = {
   id: '',
   name: '',
@@ -47,8 +67,10 @@ export function SettingsModal({ isOpen, onClose }: Props) {
   const [apiKeyInput, setApiKeyInput] = useState<{ providerId: string; value: string } | null>(null);
   const [customDraft, setCustomDraft] = useState<CustomDraft | null>(null);
   const [customError, setCustomError] = useState<string | null>(null);
-  const [useOpencodeFlag, setUseOpencodeFlag] = useState<boolean>(false);
-  const [useOpencodeLoading, setUseOpencodeLoading] = useState(false);
+  const [agentRuntime, setAgentRuntime] = useState<AgentRuntimeId>('opencode');
+  const [agentRuntimes, setAgentRuntimes] = useState<AgentRuntimeOption[]>([]);
+  const [agentRuntimeLoading, setAgentRuntimeLoading] = useState(false);
+  const [preflight, setPreflight] = useState<PreflightResult | null>(null);
 
   useEffect(() => {
     if (isOpen) loadConfig();
@@ -60,8 +82,11 @@ export function SettingsModal({ isOpen, onClose }: Props) {
     try {
       const config = await invoke<ModelProvider[]>('settings.modelConfig:get');
       setProviders(config);
-      const flag = await invoke<{ useOpencode: boolean }>('settings.useOpencode:get');
-      setUseOpencodeFlag(flag.useOpencode);
+      const runtime = await invoke<{ agentRuntime: AgentRuntimeId; runtimes: AgentRuntimeOption[] }>('settings.agentRuntime:get');
+      setAgentRuntime(runtime.agentRuntime);
+      setAgentRuntimes(runtime.runtimes);
+      const preflightResult = await invoke<PreflightResult>('app.preflight');
+      setPreflight(preflightResult);
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -133,17 +158,19 @@ export function SettingsModal({ isOpen, onClose }: Props) {
     }
   }
 
-  async function handleToggleUseOpencode() {
-    const next = !useOpencodeFlag;
-    setUseOpencodeLoading(true);
-    setUseOpencodeFlag(next);
+  async function handleAgentRuntimeChange(next: AgentRuntimeId) {
+    const previous = agentRuntime;
+    setAgentRuntimeLoading(true);
+    setAgentRuntime(next);
     try {
-      await invoke('settings.useOpencode:set', { useOpencode: next });
+      await invoke('settings.agentRuntime:set', { agentRuntime: next });
+      const preflightResult = await invoke<PreflightResult>('app.preflight');
+      setPreflight(preflightResult);
     } catch (e: any) {
       setError(e.message);
-      setUseOpencodeFlag(!next); // revert
+      setAgentRuntime(previous);
     } finally {
-      setUseOpencodeLoading(false);
+      setAgentRuntimeLoading(false);
     }
   }
 
@@ -174,7 +201,64 @@ export function SettingsModal({ isOpen, onClose }: Props) {
         </div>
 
         <div className="flex-1 overflow-y-auto px-6 py-5">
-          <div className="text-[12px] text-[var(--color-text-faint)] mb-3">Model providers</div>
+          <div className="text-[12px] text-[var(--color-text-faint)] mb-3">
+            Preflight
+          </div>
+          <div className="rounded-lg border border-[var(--color-hair)] bg-[var(--color-surface-2)]/50 p-4 mb-6">
+            {!preflight ? (
+              <div className="text-[12px] text-[var(--color-text-muted)]">Loading checks…</div>
+            ) : (
+              <div className="space-y-2">
+                {preflight.checks.map((check) => (
+                  <div key={check.id} className="flex items-start gap-2 text-[12px]">
+                    <span
+                      className="mt-[5px] w-1.5 h-1.5 rounded-full shrink-0"
+                      style={{ background: check.ok ? 'var(--color-success)' : 'var(--color-error)' }}
+                    />
+                    <div className="min-w-0">
+                      <div className="text-[var(--color-text)]">{check.label}</div>
+                      {check.detail && (
+                        <div className="font-mono text-[11px] text-[var(--color-text-muted)] break-all">{check.detail}</div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="text-[12px] text-[var(--color-text-faint)] mb-3">
+            Agent CLI runtime
+          </div>
+          <div className="rounded-lg border border-[var(--color-hair)] bg-[var(--color-surface-2)]/50 p-4 mb-6">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              {(agentRuntimes.length > 0 ? agentRuntimes : [
+                { id: 'opencode', label: 'opencode', description: 'Structured sessions with tool use.' },
+                { id: 'claude-code', label: 'Claude Code', description: 'Terminal CLI agent in the worktree.' },
+                { id: 'direct-llm', label: 'Direct LLM', description: 'Legacy one-shot fallback.' },
+              ] as AgentRuntimeOption[]).map((runtime) => (
+                <button
+                  key={runtime.id}
+                  type="button"
+                  disabled={agentRuntimeLoading}
+                  onClick={() => handleAgentRuntimeChange(runtime.id)}
+                  className={`text-left rounded-md border px-3 py-2 transition-colors ${
+                    agentRuntime === runtime.id
+                      ? 'border-[var(--color-accent)]/70 bg-[var(--color-accent)]/10'
+                      : 'border-[var(--color-hair)] bg-[var(--color-ink)] hover:bg-[var(--color-surface)]'
+                  }`}
+                >
+                  <div className="text-[13px] font-medium mb-1">{runtime.label}</div>
+                  <div className="text-[11.5px] text-[var(--color-text-muted)] leading-snug">
+                    {runtime.description}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="pt-5 border-t border-[var(--color-hair)]">
+            <div className="text-[12px] text-[var(--color-text-faint)] mb-3">Model providers</div>
 
           <div className="relative mb-5">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--color-text-muted)]" />
@@ -227,37 +311,6 @@ export function SettingsModal({ isOpen, onClose }: Props) {
           {!loading && providers.length > 0 && configured.length === 0 && available.length === 0 && (
             <p className="text-[13px] text-[var(--color-text-muted)]">No providers match "{search}".</p>
           )}
-
-          <div className="mt-6 pt-5 border-t border-[var(--color-hair)]">
-            <div className="text-[12px] text-[var(--color-text-faint)] mb-3">
-              Implementation backend
-            </div>
-            <div className="rounded-lg border border-[var(--color-hair)] bg-[var(--color-surface-2)]/50 p-4">
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0">
-                  <div className="text-[13.5px] font-medium mb-1">
-                    Use opencode for the developer agent
-                  </div>
-                  <div className="text-[12px] text-[var(--color-text-muted)] leading-relaxed">
-                    When on, the developer agent runs as a tool-using opencode session
-                    inside the worktree (Read, Edit, Bash, Grep). When off, the developer
-                    uses the legacy one-shot LLM dictation path.
-                  </div>
-                </div>
-                <label className="flex items-center gap-1.5 text-[12px] cursor-pointer shrink-0 pt-1">
-                  <input
-                    type="checkbox"
-                    checked={useOpencodeFlag}
-                    disabled={useOpencodeLoading}
-                    onChange={handleToggleUseOpencode}
-                    className="w-3 h-3 accent-[var(--color-accent)]"
-                  />
-                  <span className="text-[var(--color-text-muted)]">
-                    {useOpencodeFlag ? 'On' : 'Off'}
-                  </span>
-                </label>
-              </div>
-            </div>
           </div>
 
           <div className="mt-6 pt-5 border-t border-[var(--color-hair)]">

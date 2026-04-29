@@ -7,6 +7,7 @@ import { agentStreamManager, type AgentEvent } from './agent-stream.js';
 import { startSidecar, stopSidecar } from './sidecar-lifecycle.js';
 import { milestones, modelConfig, agentCalls, type AgentCallRecord } from './db.js';
 import { appSettings } from './app-settings.js';
+import { AGENT_RUNTIMES, DEFAULT_AGENT_RUNTIME, isAgentRuntimeId, runtimeFromLegacyUseOpencode } from './agent-runtime.js';
 import { loadProjectContext, saveProjectContext } from './project-context.js';
 import './ipc-handlers.js';
 
@@ -28,6 +29,17 @@ const ptyHandlersRegistered = new Set<string>();
 // Structured-agent subscriptions: maps agent ID to set of subscribed WebSocket clients
 const agentSubscriptions = new Map<string, Set<WebSocket>>();
 const agentHandlersRegistered = new Set<string>();
+
+function getAgentRuntimeSetting() {
+  const current = appSettings.get('agentRuntime');
+  if (isAgentRuntimeId(current)) return current;
+  const migrated = runtimeFromLegacyUseOpencode(appSettings.get('useOpencode'));
+  if (migrated) {
+    appSettings.set('agentRuntime', migrated);
+    return migrated;
+  }
+  return DEFAULT_AGENT_RUNTIME;
+}
 
 // Broadcast to all connected WebSocket clients
 function broadcastToUI(type: string, payload: any) {
@@ -413,6 +425,9 @@ const httpServer = http.createServer(async (req, res) => {
     req.on('end', () => {
       try {
         const notification = JSON.parse(body);
+        if (typeof notification.agentId === 'string') {
+          agentStreamManager.clear(notification.agentId);
+        }
         broadcastToUI('agent:started', notification);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
@@ -519,10 +534,46 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
-  // GET /api/settings/useOpencode — returns { useOpencode: boolean }
+  // GET /api/settings/agentRuntime — returns selected CLI/runtime adapter.
+  if (req.method === 'GET' && url.pathname === '/api/settings/agentRuntime') {
+    try {
+      const agentRuntime = getAgentRuntimeSetting();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ agentRuntime, runtimes: AGENT_RUNTIMES }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: String(err) }));
+    }
+    return;
+  }
+
+  // POST /api/settings/agentRuntime — body { agentRuntime: "opencode" | "claude-code" | "direct-llm" }
+  if (req.method === 'POST' && url.pathname === '/api/settings/agentRuntime') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const parsed = JSON.parse(body) as { agentRuntime?: unknown };
+        if (!isAgentRuntimeId(parsed.agentRuntime)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'body must be { agentRuntime: "opencode" | "claude-code" | "direct-llm" }' }));
+          return;
+        }
+        appSettings.set('agentRuntime', parsed.agentRuntime);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, agentRuntime: parsed.agentRuntime }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+    });
+    return;
+  }
+
+  // GET /api/settings/useOpencode — compatibility shim for older workers.
   if (req.method === 'GET' && url.pathname === '/api/settings/useOpencode') {
     try {
-      const value = appSettings.getBool('useOpencode', false);
+      const value = getAgentRuntimeSetting() === 'opencode';
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ useOpencode: value }));
     } catch (err) {
@@ -532,7 +583,7 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
-  // POST /api/settings/useOpencode — body { useOpencode: boolean }
+  // POST /api/settings/useOpencode — compatibility shim for older clients.
   if (req.method === 'POST' && url.pathname === '/api/settings/useOpencode') {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
@@ -545,6 +596,7 @@ const httpServer = http.createServer(async (req, res) => {
           return;
         }
         appSettings.set('useOpencode', parsed.useOpencode ? 'true' : 'false');
+        appSettings.set('agentRuntime', parsed.useOpencode ? 'opencode' : 'direct-llm');
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, useOpencode: parsed.useOpencode }));
       } catch (err) {
@@ -562,14 +614,14 @@ const httpServer = http.createServer(async (req, res) => {
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', async () => {
       try {
-        const { worktreePath } = JSON.parse(body) as { worktreePath: string };
+        const { worktreePath, env } = JSON.parse(body) as { worktreePath: string; env?: Record<string, string> };
         if (!worktreePath) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'worktreePath required' }));
           return;
         }
         const { startOpencodeServer } = await import('./opencode/lifecycle.js');
-        const info = await startOpencodeServer(runId, worktreePath);
+        const info = await startOpencodeServer(runId, worktreePath, env ?? {});
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ runId, ...info }));
       } catch (err) {

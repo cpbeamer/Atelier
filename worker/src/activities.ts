@@ -183,12 +183,14 @@ export interface AgentNotification {
   agentId: string;
   agentName: string;
   terminalType: 'terminal' | 'direct-llm';
+  runId?: string;
 }
 
 export interface AgentCompletion {
   agentId: string;
   status: 'completed' | 'error';
   output?: string;
+  runId?: string;
 }
 
 import fs from 'node:fs';
@@ -200,9 +202,11 @@ import { NonRetryableAgentError } from './errors.js';
 import { runVerify } from './verify.js';
 import { loadPersona, loadPanel } from './personaLoader.js';
 import { runOpenCodeAgent } from './llm/opencodeAgent.js';
-import { useOpencode } from './llm/featureFlags.js';
+import { getAgentRuntime, useOpencode, useTerminalAgentRuntime } from './llm/featureFlags.js';
+import { runCliAgent } from './llm/cliAgent.js';
 import { sendAgentPrompt } from './llm/opencodeServeClient.js';
-import { writeOpencodeConfig } from './llm/opencodeConfig.js';
+import { OPENCODE_API_KEY_ENV, writeOpencodeConfig } from './llm/opencodeConfig.js';
+import { BackgroundManager } from './subagent/index.js';
 
 async function readFile(filePath: string): Promise<string> {
   return fs.promises.readFile(filePath, 'utf-8');
@@ -225,6 +229,8 @@ function execCmd(command: string, args: string[], cwd?: string, timeoutMs = 60 *
     proc.on('exit', (code) => { clearTimeout(timer); resolve({ code: code ?? 0, stdout, stderr }); });
   });
 }
+
+const bgManager = BackgroundManager.getInstance();
 
 // M2.7 wraps reasoning in <think>...</think> tags; strip these before parsing
 // structured output so hidden content never smuggles through file-edit markers
@@ -420,42 +426,132 @@ const RESEARCHER_SPECIALISTS = ['architecture', 'dependencies', 'tests', 'histor
 type ResearcherSpecialist = typeof RESEARCHER_SPECIALISTS[number];
 
 export async function researchRepo(input: ResearchInput): Promise<ResearchOutput> {
-  const { projectPath, userContext = {}, runId } = input;
+  const { projectPath, userContext = {}, runId, agentId: parentAgentId = 'researcher' } = input;
 
+  await emitAgentEvent(parentAgentId, { kind: 'text', text: '\n↳ gathering repository context…' });
   const { baseContext } = await gatherRepoContext(projectPath);
   const history = await gitHistorySummary(projectPath);
+  await emitAgentEvent(parentAgentId, { kind: 'text', text: '\n↳ repository context loaded' });
 
   if (await useOpencode()) {
+    await emitAgentEvent(parentAgentId, { kind: 'text', text: '\n↳ launching specialist research agents…' });
     const panel = await loadPanel(process.cwd(), 'researcher', RESEARCHER_SPECIALISTS);
-    const fragments = await Promise.all(RESEARCHER_SPECIALISTS.map(async (specialist) => {
-      const agentId = `researcher-${specialist}`;
-      await notifyAgentStart({ agentId, agentName: `Researcher (${specialist})`, terminalType: 'direct-llm' });
-      const extra = specialist === 'history'
-        ? `\n\n## Recent git history (subject lines, last 90 days)\n${history || '(no git history)'}`
-        : '';
-      try {
-        const text = await sendAgentPrompt({
-          runId: runId ?? '',
-          personaKey: agentId,
-          personaText: panel[specialist],
-          userPrompt: `${baseContext}${extra}`,
-        });
-        const out = await withJsonRetry<Record<string, unknown>>(
-          () => Promise.resolve(text),
-          { maxAttempts: 3, validate: (v) => typeof v === 'object' && v !== null },
-        );
-        await notifyAgentComplete({ agentId, status: 'completed', output: JSON.stringify(out).slice(0, 500) });
-        return [specialist, out] as const;
-      } catch (e) {
-        await notifyAgentComplete({ agentId, status: 'error', output: String(e).slice(0, 500) });
-        return [specialist, { error: String(e) }] as const;
-      }
-    }));
+    const startedAt = Date.now();
+    const heartbeat = setInterval(() => {
+      const seconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+      void emitAgentEvent(parentAgentId, { kind: 'text', text: `\n↳ specialist research still running (${seconds}s)…` });
+    }, 10_000);
+    let fragments: readonly (readonly [ResearcherSpecialist, Record<string, unknown>])[];
+    try {
+      fragments = await Promise.all(RESEARCHER_SPECIALISTS.map(async (specialist) => {
+        const agentId = `researcher-${specialist}`;
+        await notifyAgentStart({ agentId, agentName: `Researcher (${specialist})`, terminalType: 'direct-llm', runId });
+        const extra = specialist === 'history'
+          ? `\n\n## Recent git history (subject lines, last 90 days)\n${history || '(no git history)'}`
+          : '';
+        try {
+          const text = await sendAgentPrompt({
+            runId: runId ?? '',
+            personaKey: agentId,
+            personaText: panel[specialist],
+            userPrompt: `${baseContext}${extra}`,
+          });
+          const out = await withJsonRetry<Record<string, unknown>>(
+            () => Promise.resolve(text),
+            { maxAttempts: 3, validate: (v) => typeof v === 'object' && v !== null },
+          );
+          await notifyAgentComplete({ agentId, status: 'completed', output: JSON.stringify(out).slice(0, 500), runId });
+          return [specialist, out] as const;
+        } catch (e) {
+          await notifyAgentComplete({ agentId, status: 'error', output: String(e).slice(0, 500), runId });
+          return [specialist, { error: String(e) }] as const;
+        }
+      }));
+    } finally {
+      clearInterval(heartbeat);
+    }
+    await emitAgentEvent(parentAgentId, { kind: 'text', text: '\n↳ specialist research complete' });
+
+    // NEW: Librarian + Explorer in parallel with researchers
+    const librarianPersona = await loadPersona(process.cwd(), 'librarian');
+    const explorerPersona = await loadPersona(process.cwd(), 'explorer');
+    const librarianAgentId = 'librarian';
+    const explorerAgentId = 'explorer';
+
+    await emitAgentEvent(parentAgentId, { kind: 'text', text: '\n↳ launching documentation and structure analysis…' });
+    await notifyAgentStart({ agentId: librarianAgentId, agentName: 'Librarian', terminalType: 'direct-llm', runId });
+    await notifyAgentStart({ agentId: explorerAgentId, agentName: 'Explorer', terminalType: 'direct-llm', runId });
+
+    const auxStartedAt = Date.now();
+    const auxHeartbeat = setInterval(() => {
+      const seconds = Math.max(1, Math.round((Date.now() - auxStartedAt) / 1000));
+      void emitAgentEvent(parentAgentId, { kind: 'text', text: `\n↳ documentation/structure analysis still running (${seconds}s)…` });
+    }, 10_000);
+    const [librarianResult, explorerResult] = await Promise.all([
+      (async () => {
+        try {
+          if (await useOpencode()) {
+            const text = await sendAgentPrompt({
+              runId: runId ?? '',
+              personaKey: librarianAgentId,
+              personaText: librarianPersona,
+              userPrompt: `Analyze this codebase for documentation gaps, outdated docs, and missing API references.\n\n${baseContext}`,
+            });
+            const out = await withJsonRetry<Record<string, unknown>>(
+              () => Promise.resolve(text),
+              { maxAttempts: 3, validate: (v) => typeof v === 'object' && v !== null },
+            );
+            await notifyAgentComplete({ agentId: librarianAgentId, status: 'completed', output: JSON.stringify(out).slice(0, 500) });
+            return out;
+          } else {
+            const out = await withJsonRetry<Record<string, unknown>>(
+              (suffix) => callLLM(librarianPersona, `${baseContext}${suffix ?? ''}`, { cwd: projectPath, agentId: librarianAgentId, runId }),
+              { maxAttempts: 2, validate: (v) => typeof v === 'object' && v !== null },
+            );
+            await notifyAgentComplete({ agentId: librarianAgentId, status: 'completed', output: JSON.stringify(out).slice(0, 500) });
+            return out;
+          }
+        } catch (e) {
+          await notifyAgentComplete({ agentId: librarianAgentId, status: 'error', output: String(e).slice(0, 500) });
+          return { error: String(e) };
+        }
+      })(),
+      (async () => {
+        try {
+          if (await useOpencode()) {
+            const text = await sendAgentPrompt({
+              runId: runId ?? '',
+              personaKey: explorerAgentId,
+              personaText: explorerPersona,
+              userPrompt: `Map the codebase structure rapidly. Identify main entry points, key modules, and architectural patterns.\n\n${baseContext}`,
+            });
+            const out = await withJsonRetry<Record<string, unknown>>(
+              () => Promise.resolve(text),
+              { maxAttempts: 3, validate: (v) => typeof v === 'object' && v !== null },
+            );
+            await notifyAgentComplete({ agentId: explorerAgentId, status: 'completed', output: JSON.stringify(out).slice(0, 500) });
+            return out;
+          } else {
+            const out = await withJsonRetry<Record<string, unknown>>(
+              (suffix) => callLLM(explorerPersona, `${baseContext}${suffix ?? ''}`, { cwd: projectPath, agentId: explorerAgentId, runId }),
+              { maxAttempts: 2, validate: (v) => typeof v === 'object' && v !== null },
+            );
+            await notifyAgentComplete({ agentId: explorerAgentId, status: 'completed', output: JSON.stringify(out).slice(0, 500) });
+            return out;
+          }
+        } catch (e) {
+          await notifyAgentComplete({ agentId: explorerAgentId, status: 'error', output: String(e).slice(0, 500) });
+          return { error: String(e) };
+        }
+      })(),
+    ]).finally(() => clearInterval(auxHeartbeat));
+    await emitAgentEvent(parentAgentId, { kind: 'text', text: '\n↳ documentation and structure analysis complete' });
 
     const specialistFindings = Object.fromEntries(fragments) as Record<ResearcherSpecialist, Record<string, unknown>>;
     const synthPersona = await loadPersona(process.cwd(), 'researcher-synthesizer');
-    const synthPrompt = `User context: ${JSON.stringify(userContext)}\n\nSpecialist findings:\n${JSON.stringify(specialistFindings, null, 2)}`;
+    const synthPrompt = `User context: ${JSON.stringify(userContext)}\n\nSpecialist findings:\n${JSON.stringify(specialistFindings, null, 2)}\n\nLibrarian findings:\n${JSON.stringify(librarianResult, null, 2)}\n\nExplorer findings:\n${JSON.stringify(explorerResult, null, 2)}`;
     try {
+      await emitAgentEvent(parentAgentId, { kind: 'text', text: '\n↳ synthesizing research findings…' });
       const synthText = await sendAgentPrompt({
         runId: runId ?? '',
         personaKey: 'researcher-synthesizer',
@@ -471,10 +567,11 @@ export async function researchRepo(input: ResearchInput): Promise<ResearchOutput
             && typeof (v as any).repoStructure === 'string'
             && Array.isArray((v as any).currentFeatures)
             && Array.isArray((v as any).gaps)
-            && Array.isArray((v as any).opportunities),
+          && Array.isArray((v as any).opportunities),
         },
       );
     } catch {
+      await emitAgentEvent(parentAgentId, { kind: 'text', text: '\n↳ synthesizer failed; using fallback research summary' });
       return fallbackSynthesizeResearch(specialistFindings, baseContext);
     }
   }
@@ -833,7 +930,7 @@ Be specific. Generic plans are useless. Respond with ONLY a JSON array, one entr
       };
     } catch (e) {
       await notifyAgentComplete({ agentId: architectAgentId, status: 'error', output: String(e).slice(0, 500) });
-      throw e;
+      return fallbackScopeTickets(tickets, String(e));
     }
   }
 
@@ -874,7 +971,7 @@ Be specific. Generic plans are useless. Respond with ONLY a JSON array, one entr
 
   const validCandidates = candidates.filter((c): c is ArchitectEntry[] => c !== null);
   if (validCandidates.length === 0) {
-    throw new NonRetryableAgentError('All architect candidates failed to produce valid plans');
+    return fallbackScopeTickets(tickets, 'all architect candidates failed to produce valid plans');
   }
 
   // If only one candidate survived, skip the judge round-trip.
@@ -913,16 +1010,27 @@ Be specific. Generic plans are useless. Respond with ONLY a JSON array, one entr
   };
 }
 
+function fallbackScopeTickets(tickets: Ticket[], reason: string): ScopeOutput {
+  return {
+    scopedTickets: tickets.map((ticket) => ({
+      ...ticket,
+      technicalPlan: `Fallback plan because architecture synthesis failed (${reason.slice(0, 240)}). Inspect the repository, make the smallest change that satisfies the ticket, and verify the acceptance criteria.`,
+      filesToChange: [],
+      dependencies: [],
+      complexity: 'medium' as const,
+    })),
+  };
+}
+
 export async function implementCode(input: ImplementInput): Promise<ImplementOutput> {
   const { ticket, worktreePath, projectPath, feedback, testFeedback, agentId, runId } = input;
 
   const persona = await loadPersona(projectPath, 'developer');
+  const runtime = await getAgentRuntime();
 
-  // opencode path: spawn a real tool-using agent inside the worktree. The
-  // agent has Read/Edit/Bash/Grep tools so it iterates against actual repo
-  // state instead of dictating BEGIN FILE blocks blind. Gated behind a flag
-  // until smoke-tested across more tickets.
-  if (await useOpencode()) {
+  // Tool CLI path: run a real agent inside the worktree so it iterates against
+  // actual repo state instead of dictating BEGIN FILE blocks blind.
+  if (runtime === 'opencode') {
     const provider = await getPrimaryProvider();
     const apiKey = await getApiKey(provider.id, provider.kind);
     const run = await runOpenCodeAgent({
@@ -939,6 +1047,24 @@ export async function implementCode(input: ImplementInput): Promise<ImplementOut
       // workflow's stalled-milestone path can escalate to a human.
       throw new NonRetryableAgentError(
         `opencode produced no file changes for ticket ${ticket.id}. summary: ${run.summary}`,
+      );
+    }
+    return { code: run.summary, filesChanged: run.filesChanged };
+  }
+
+  if (runtime === 'claude-code') {
+    const run = await runCliAgent({
+      runtime,
+      worktreePath,
+      ticket,
+      feedback,
+      testFeedback,
+      agentId: agentId ?? 'developer',
+      developerPersona: persona,
+    });
+    if (run.filesChanged.length === 0) {
+      throw new NonRetryableAgentError(
+        `Claude Code produced no file changes for ticket ${ticket.id}. summary: ${run.summary}`,
       );
     }
     return { code: run.summary, filesChanged: run.filesChanged };
@@ -1016,11 +1142,11 @@ Rules:
 export async function implementCodeBestOfN(
   input: ImplementInput & { n?: number },
 ): Promise<ImplementOutput> {
-  // Under opencode the inner agent iterates internally — spawning N parallel
+  // Under terminal runtimes the inner agent iterates internally — spawning N parallel
   // candidates would race on the worktree's git index and require per-ticket
   // sub-worktrees to land safely. Defer that machinery; for now a single
-  // well-resourced opencode run replaces N brittle one-shot candidates.
-  if (await useOpencode()) {
+  // well-resourced CLI run replaces N brittle one-shot candidates.
+  if (await useTerminalAgentRuntime()) {
     return implementCode(input);
   }
 
@@ -1241,33 +1367,61 @@ FILES CHANGED: ${implementation.filesChanged.join(', ')}
 Use your read tools to inspect the changed files. Evaluate strictly within your specialist scope. Respond with JSON only.
 `;
 
-    const verdicts = await Promise.all(
-      REVIEWER_SPECIALISTS.map(async (specialist) => {
-        const agentId = `reviewer-${specialist}`;
-        await notifyAgentStart({ agentId, agentName: `Reviewer (${specialist})`, terminalType: 'direct-llm' });
-        try {
-          const text = await sendAgentPrompt({
-            runId: runId ?? '',
-            personaKey: agentId,
-            personaText: panelPrompts[specialist],
-            userPrompt: sharedPromptBody,
-          });
-          const verdict = await withJsonRetry<Record<string, unknown>>(
-            () => Promise.resolve(text),
-            {
-              maxAttempts: 3,
-              validate: (v) => typeof v === 'object' && v !== null && 'approved' in (v as object),
-            },
-          );
-          await notifyAgentComplete({ agentId, status: 'completed', output: JSON.stringify(verdict).slice(0, 500) });
-          return [specialist, verdict] as const;
-        } catch (e) {
-          await notifyAgentComplete({ agentId, status: 'error', output: String(e).slice(0, 500) });
-          return [specialist, { approved: false, error: String(e) }] as const;
-        }
-      }),
-    );
-    const rawVerdicts = Object.fromEntries(verdicts) as Record<ReviewerSpecialist, Record<string, unknown>>;
+    // NEW: Oracle architecture consultation in parallel with reviewer panel
+    const oraclePersona = await loadPersona(process.cwd(), 'oracle');
+    const oracleAgentId = 'oracle';
+    await notifyAgentStart({ agentId: oracleAgentId, agentName: 'Oracle', terminalType: 'direct-llm' });
+
+    const oraclePromise = (async () => {
+      try {
+        const text = await sendAgentPrompt({
+          runId: runId ?? '',
+          personaKey: oracleAgentId,
+          personaText: oraclePersona,
+          userPrompt: sharedPromptBody,
+        });
+        const out = await withJsonRetry<Record<string, unknown>>(
+          () => Promise.resolve(text),
+          { maxAttempts: 3, validate: (v) => typeof v === 'object' && v !== null },
+        );
+        await notifyAgentComplete({ agentId: oracleAgentId, status: 'completed', output: JSON.stringify(out).slice(0, 500) });
+        return out;
+      } catch (e) {
+        await notifyAgentComplete({ agentId: oracleAgentId, status: 'error', output: String(e).slice(0, 500) });
+        return { approved: false, error: String(e) };
+      }
+    })();
+
+    const verdictsPromiseAll = REVIEWER_SPECIALISTS.map(async (specialist) => {
+      const agentId = `reviewer-${specialist}`;
+      await notifyAgentStart({ agentId, agentName: `Reviewer (${specialist})`, terminalType: 'direct-llm' });
+      try {
+        const text = await sendAgentPrompt({
+          runId: runId ?? '',
+          personaKey: agentId,
+          personaText: panelPrompts[specialist],
+          userPrompt: sharedPromptBody,
+        });
+        const verdict = await withJsonRetry<Record<string, unknown>>(
+          () => Promise.resolve(text),
+          {
+            maxAttempts: 3,
+            validate: (v) => typeof v === 'object' && v !== null && 'approved' in (v as object),
+          },
+        );
+        await notifyAgentComplete({ agentId, status: 'completed', output: JSON.stringify(verdict).slice(0, 500) });
+        return [specialist, verdict] as const;
+      } catch (e) {
+        await notifyAgentComplete({ agentId, status: 'error', output: String(e).slice(0, 500) });
+        return [specialist, { approved: false, error: String(e) }] as const;
+      }
+    });
+
+    const verdicts = await Promise.all([oraclePromise, ...verdictsPromiseAll]);
+    const oracleResult = verdicts[0] as Record<string, unknown>;
+    const rawVerdicts = Object.fromEntries(
+      REVIEWER_SPECIALISTS.map((specialist, i) => [specialist, verdicts[i + 1]])
+    ) as Record<ReviewerSpecialist, Record<string, unknown>>;
 
     const synthPersona = await loadPersona(process.cwd(), 'reviewer-synthesizer');
     const synthAgentId = 'reviewer-synthesizer';
@@ -1278,7 +1432,7 @@ Use your read tools to inspect the changed files. Evaluate strictly within your 
         runId: runId ?? '',
         personaKey: synthAgentId,
         personaText: synthPersona,
-        userPrompt: `Panel verdicts:\n${JSON.stringify(rawVerdicts, null, 2)}`,
+        userPrompt: `Panel verdicts:\n${JSON.stringify(rawVerdicts, null, 2)}\n\nOracle architecture review:\n${JSON.stringify(oracleResult, null, 2)}`,
       });
       const synth = await withJsonRetry<Synth>(
         () => Promise.resolve(synthText),
@@ -1655,6 +1809,13 @@ async function emitAgentEvent(id: string, event: { kind: string; [k: string]: an
 }
 
 export async function notifyAgentStart(input: AgentNotification): Promise<void> {
+  try {
+    await fetch('http://localhost:3001/api/agent/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+  } catch { /* non-fatal */ }
   const model = await getPrimaryModelName();
   await emitAgentEvent(input.agentId, {
     kind: 'init',
@@ -1667,13 +1828,6 @@ export async function notifyAgentStart(input: AgentNotification): Promise<void> 
     kind: 'text',
     text: `▶ ${input.agentName} starting…`,
   });
-  try {
-    await fetch('http://localhost:3001/api/agent/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(input),
-    });
-  } catch { /* non-fatal */ }
 }
 
 export async function notifyAgentComplete(input: AgentCompletion): Promise<void> {
@@ -1746,13 +1900,19 @@ export async function resolveMilestone(
   console.log('resolveMilestone', milestoneId, decision);
 }
 
-const OPENCODE_BACKEND = process.env.ATELIER_BACKEND_URL || 'http://localhost:3001';
+const RUNTIME_BACKEND = process.env.ATELIER_BACKEND_URL || 'http://localhost:3001';
 
-export async function startRunOpencode(input: { runId: string; worktreePath: string }): Promise<void> {
-  const response = await fetch(`${OPENCODE_BACKEND}/api/opencode/run/${encodeURIComponent(input.runId)}/start`, {
+export async function startRunAgentRuntime(input: { runId: string; worktreePath: string }): Promise<void> {
+  if ((await getAgentRuntime()) !== 'opencode') return;
+  const provider = await getPrimaryProvider();
+  const apiKey = await getApiKey(provider.id, provider.kind);
+  const response = await fetch(`${RUNTIME_BACKEND}/api/opencode/run/${encodeURIComponent(input.runId)}/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ worktreePath: input.worktreePath }),
+    body: JSON.stringify({
+      worktreePath: input.worktreePath,
+      env: { [OPENCODE_API_KEY_ENV]: apiKey },
+    }),
   });
   if (!response.ok) {
     const text = await response.text().catch(() => '');
@@ -1760,11 +1920,11 @@ export async function startRunOpencode(input: { runId: string; worktreePath: str
   }
 }
 
-export async function stopRunOpencode(input: { runId: string }): Promise<void> {
+export async function stopRunAgentRuntime(input: { runId: string }): Promise<void> {
   // Best-effort: failure here is non-fatal, the cleanup just leaks a subprocess
   // until the backend exits. Don't throw.
   try {
-    await fetch(`${OPENCODE_BACKEND}/api/opencode/run/${encodeURIComponent(input.runId)}/stop`, {
+    await fetch(`${RUNTIME_BACKEND}/api/opencode/run/${encodeURIComponent(input.runId)}/stop`, {
       method: 'POST',
     });
   } catch {
@@ -1774,11 +1934,18 @@ export async function stopRunOpencode(input: { runId: string }): Promise<void> {
 
 // Workflow code can't read process.env or call fetch directly. Expose the
 // flag resolver as an activity so the workflow can branch on it.
-export async function useOpencodeForRun(): Promise<boolean> {
-  return useOpencode();
+export async function useRunAgentRuntimeService(): Promise<boolean> {
+  return (await getAgentRuntime()) === 'opencode';
 }
 
-export async function bootstrapOpencodeWorktree(input: { worktreePath: string }): Promise<void> {
+export async function bootstrapAgentRuntimeWorktree(input: { worktreePath: string }): Promise<void> {
+  if ((await getAgentRuntime()) !== 'opencode') return;
   const provider = await getPrimaryProvider();
   await writeOpencodeConfig(input.worktreePath, provider);
 }
+
+// Backwards-compatible activity names for older workflow bundles.
+export const startRunOpencode = startRunAgentRuntime;
+export const stopRunOpencode = stopRunAgentRuntime;
+export const useOpencodeForRun = useRunAgentRuntimeService;
+export const bootstrapOpencodeWorktree = bootstrapAgentRuntimeWorktree;

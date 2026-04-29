@@ -164,6 +164,9 @@ export const projects = {
     getDb().prepare('INSERT INTO projects VALUES (?,?,?,?,?,?)').run(id, name, path, created_at, last_opened_at, settings_json),
   list: () => getDb().prepare('SELECT * FROM projects ORDER BY last_opened_at DESC').all(),
   findById: (id: string) => getDb().prepare('SELECT * FROM projects WHERE id = ?').get(id),
+  findByPath: (projectPath: string) => getDb().prepare('SELECT * FROM projects WHERE path = ?').get(projectPath) as
+    | { id: string; name: string; path: string; created_at: number; last_opened_at: number; settings_json: string }
+    | undefined,
   updateLastOpened: (id: string, last_opened_at: number) =>
     getDb().prepare('UPDATE projects SET last_opened_at = ? WHERE id = ?').run(last_opened_at, id),
 };
@@ -178,6 +181,11 @@ export const runs = {
     completed_at
       ? getDb().prepare('UPDATE workflow_runs SET status = ?, completed_at = ? WHERE id = ?').run(status, completed_at, id)
       : getDb().prepare('UPDATE workflow_runs SET status = ? WHERE id = ?').run(status, id),
+  updateWorktree: (id: string, worktreePath: string) =>
+    getDb().prepare('UPDATE workflow_runs SET worktree_path = ? WHERE id = ?').run(worktreePath, id),
+  complete: (id: string, status: string, completed_at: number, result_json: string) =>
+    getDb().prepare('UPDATE workflow_runs SET status = ?, completed_at = ?, result_json = ? WHERE id = ?')
+      .run(status, completed_at, result_json, id),
 };
 
 export const milestones = {

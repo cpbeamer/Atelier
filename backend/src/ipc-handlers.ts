@@ -1,16 +1,22 @@
 // backend/src/ipc-handlers.ts
 import { projects, runs, milestones, modelConfig } from './db.js';
 import { appSettings } from './app-settings.js';
+import { AGENT_RUNTIMES, DEFAULT_AGENT_RUNTIME, isAgentRuntimeId, runtimeFromLegacyUseOpencode, type AgentRuntimeId } from './agent-runtime.js';
 import { ptyManager } from './pty-manager.js';
+import { agentStreamManager } from './agent-stream.js';
 import { createWorktree, removeWorktree } from './worktree.js';
 import { startSidecar, stopSidecar, getSidecarStatus } from './sidecar-lifecycle.js';
 import { createMilestone, resolveMilestone, getPendingMilestones } from './milestone-service.js';
 import keytar from 'keytar';
 import { Client, Connection } from '@temporalio/client';
 import path from 'node:path';
+import fs from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 const SERVICE_NAME = 'Atelier';
 const KEYCHAIN_PREFIX = 'atelier.provider.';
+const execFileAsync = promisify(execFile);
 
 // In-memory handler registry for WebSocket routing
 const handlerMap: Record<string, (opts: any) => Promise<any>> = {};
@@ -24,6 +30,17 @@ function register(name: string, handler: (opts: any) => Promise<any>) {
 
 function keychainKey(providerId: string, key: string) {
   return `${KEYCHAIN_PREFIX}${providerId}.${key}`;
+}
+
+function getAgentRuntimeSetting(): AgentRuntimeId {
+  const current = appSettings.get('agentRuntime');
+  if (isAgentRuntimeId(current)) return current;
+  const migrated = runtimeFromLegacyUseOpencode(appSettings.get('useOpencode'));
+  if (migrated) {
+    appSettings.set('agentRuntime', migrated);
+    return migrated;
+  }
+  return DEFAULT_AGENT_RUNTIME;
 }
 
 // Existing handlers
@@ -61,7 +78,13 @@ register('pty.spawnAgent', async (opts: { id: string; agentName: string; persona
 register('db.listProjects', async () => projects.list());
 register('db.addProject', async (opts: { id: string; name: string; path: string }) => {
   const now = Date.now();
+  fs.mkdirSync(path.join(opts.path, '.atelier', 'agents'), { recursive: true });
+  fs.mkdirSync(path.join(opts.path, '.atelier', 'workflows'), { recursive: true });
   projects.insert(opts.id, opts.name, opts.path, now, now);
+});
+register('db.openProject', async (opts: { id: string }) => {
+  projects.updateLastOpened(opts.id, Date.now());
+  return projects.findById(opts.id);
 });
 register('db.listRuns', async (opts: { projectId: string }) => runs.listByProject(opts.projectId));
 register('milestone.listPending', async () => {
@@ -206,7 +229,7 @@ register('settings.modelConfig:remove', async (opts: { id: string }) => {
 });
 
 register('settings.useOpencode:get', async () => {
-  return { useOpencode: appSettings.getBool('useOpencode', false) };
+  return { useOpencode: getAgentRuntimeSetting() === 'opencode' };
 });
 
 register('settings.useOpencode:set', async (opts: { useOpencode: boolean }) => {
@@ -214,7 +237,20 @@ register('settings.useOpencode:set', async (opts: { useOpencode: boolean }) => {
     throw new Error('useOpencode must be a boolean');
   }
   appSettings.set('useOpencode', opts.useOpencode ? 'true' : 'false');
+  appSettings.set('agentRuntime', opts.useOpencode ? 'opencode' : 'direct-llm');
   return { ok: true };
+});
+
+register('settings.agentRuntime:get', async () => {
+  return { agentRuntime: getAgentRuntimeSetting(), runtimes: AGENT_RUNTIMES };
+});
+
+register('settings.agentRuntime:set', async (opts: { agentRuntime: AgentRuntimeId }) => {
+  if (!isAgentRuntimeId(opts?.agentRuntime)) {
+    throw new Error('agentRuntime must be opencode, claude-code, or direct-llm');
+  }
+  appSettings.set('agentRuntime', opts.agentRuntime);
+  return { ok: true, agentRuntime: opts.agentRuntime };
 });
 
 register('settings.apiKey:get', async (opts: { providerId: string }) => {
@@ -262,47 +298,215 @@ async function getTemporalClient(): Promise<Client> {
   return temporalClient;
 }
 
+function projectIdForPath(projectPath: string): string {
+  return projects.findByPath(projectPath)?.id ?? `path:${projectPath}`;
+}
+
+function expectedWorktreePath(projectSlug: string, runId: string): string {
+  return path.join(process.env.HOME || '', '.atelier', 'worktrees', projectSlug, runId);
+}
+
+function settleRun(runId: string, resultPromise: Promise<unknown>) {
+  resultPromise
+    .then((result) => {
+      const status = (result as any)?.status === 'stalled' ? 'stalled' : 'completed';
+      runs.complete(runId, status, Date.now(), JSON.stringify(result ?? null));
+    })
+    .catch((err) => {
+      runs.complete(runId, 'failed', Date.now(), JSON.stringify({
+        error: err instanceof Error ? err.message : String(err),
+      }));
+    });
+}
+
+register('workflow.list', async () => {
+  // Only return workflows that can be launched from the current UI without
+  // extra form input. Greenfield/feature workflows exist in the worker but need
+  // dedicated input screens before they should be presented as runnable.
+  return [];
+});
+
+register('app.preflight', async () => {
+  const checks: Array<{ id: string; label: string; ok: boolean; detail?: string; required: boolean }> = [];
+  const bunPath = process.env.BUN_PATH || path.join(process.env.HOME || '', '.bun', 'bin', 'bun');
+  checks.push({
+    id: 'bun',
+    label: 'Bun runtime',
+    ok: fs.existsSync(bunPath),
+    detail: fs.existsSync(bunPath) ? bunPath : 'Bun not found at ~/.bun/bin/bun',
+    required: true,
+  });
+  try {
+    const { stdout } = await execFileAsync('git', ['--version']);
+    checks.push({ id: 'git', label: 'Git', ok: true, detail: stdout.trim(), required: true });
+  } catch (e) {
+    checks.push({ id: 'git', label: 'Git', ok: false, detail: e instanceof Error ? e.message : String(e), required: true });
+  }
+  const temporalBinary = path.join(process.env.HOME || '', '.atelier', 'temporal', 'temporal');
+  checks.push({
+    id: 'temporal',
+    label: 'Temporal binary',
+    ok: process.env.USE_EXTERNAL_TEMPORAL === 'true' || fs.existsSync(temporalBinary),
+    detail: process.env.USE_EXTERNAL_TEMPORAL === 'true' ? `external at ${TEMPORAL_ADDRESS}` : temporalBinary,
+    required: true,
+  });
+  const primary = modelConfig.findPrimary();
+  let primaryConfigured = false;
+  if (primary) {
+    try {
+      primaryConfigured = !!(await keytarWithTimeout(
+        keytar.getPassword(SERVICE_NAME, keychainKey(primary.id, 'apiKey'))
+      ));
+    } catch {
+      primaryConfigured = false;
+    }
+  }
+  checks.push({
+    id: 'provider',
+    label: 'Primary model provider',
+    ok: !!primary && primaryConfigured,
+    detail: primary
+      ? `${primary.name} / ${primary.selected_model || 'default model'}${primaryConfigured ? '' : ' (missing API key)'}`
+      : 'Set a primary provider in Settings',
+    required: true,
+  });
+  const selectedRuntime = getAgentRuntimeSetting();
+  checks.push({
+    id: 'agent-runtime',
+    label: 'Agent CLI runtime',
+    ok: true,
+    detail: AGENT_RUNTIMES.find((runtime) => runtime.id === selectedRuntime)?.label ?? selectedRuntime,
+    required: true,
+  });
+  for (const runtime of AGENT_RUNTIMES.filter((candidate) => candidate.requiresBinary)) {
+    try {
+      const { stdout } = await execFileAsync(runtime.requiresBinary!, ['--version']);
+      checks.push({
+        id: `runtime-${runtime.id}`,
+        label: `${runtime.label} CLI`,
+        ok: true,
+        detail: stdout.trim() || `${runtime.requiresBinary} found`,
+        required: selectedRuntime === runtime.id,
+      });
+    } catch (e) {
+      checks.push({
+        id: `runtime-${runtime.id}`,
+        label: `${runtime.label} CLI`,
+        ok: false,
+        detail: e instanceof Error ? e.message : String(e),
+        required: selectedRuntime === runtime.id,
+      });
+    }
+  }
+  return {
+    ok: checks.every((c) => !c.required || c.ok),
+    checks,
+  };
+});
+
 register('autopilot.start', async (opts: { projectPath: string; projectSlug: string; suggestedFeatures?: string[] }) => {
   const client = await getTemporalClient();
+  agentStreamManager.killAll();
   const runId = `autopilot-${Date.now()}`;
-  const handle = await client.workflow.start('autopilotWorkflow', {
-    args: [{
-      projectPath: opts.projectPath,
-      projectSlug: opts.projectSlug,
-      runId,
-      suggestedFeatures: opts.suggestedFeatures || [],
-    }],
-    taskQueue: 'atelier-default-ts',
-    workflowId: `autopilot-${opts.projectSlug}-${runId}`,
-  });
+  const workflowId = `autopilot-${opts.projectSlug}-${runId}`;
+  runs.insert(
+    runId,
+    projectIdForPath(opts.projectPath),
+    'autopilot',
+    workflowId,
+    'running',
+    Date.now(),
+    JSON.stringify({ projectPath: opts.projectPath, suggestedFeatures: opts.suggestedFeatures || [] }),
+  );
+  runs.updateWorktree(runId, expectedWorktreePath(opts.projectSlug, runId));
+  let handle;
+  try {
+    handle = await client.workflow.start('autopilotWorkflow', {
+      args: [{
+        projectPath: opts.projectPath,
+        projectSlug: opts.projectSlug,
+        runId,
+        suggestedFeatures: opts.suggestedFeatures || [],
+      }],
+      taskQueue: 'atelier-default-ts',
+      workflowId,
+    });
+  } catch (err) {
+    runs.complete(runId, 'failed', Date.now(), JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+    throw err;
+  }
+  settleRun(runId, handle.result());
 
   return { runId, workflowId: handle.workflowId };
 });
 
 register('greenfield.start', async (opts: { projectPath: string; projectSlug: string; userRequest: string }) => {
   const client = await getTemporalClient();
+  agentStreamManager.killAll();
   const runId = `greenfield-${Date.now()}`;
-  const handle = await client.workflow.start('greenfieldWorkflow', {
-    args: [{
-      projectPath: opts.projectPath,
-      projectSlug: opts.projectSlug,
-      runId,
-      userRequest: opts.userRequest,
-    }],
-    taskQueue: 'atelier-default-ts',
-    workflowId: `greenfield-${opts.projectSlug}-${runId}`,
-  });
+  const workflowId = `greenfield-${opts.projectSlug}-${runId}`;
+  runs.insert(
+    runId,
+    projectIdForPath(opts.projectPath),
+    'greenfield',
+    workflowId,
+    'running',
+    Date.now(),
+    JSON.stringify({ projectPath: opts.projectPath, userRequest: opts.userRequest }),
+  );
+  runs.updateWorktree(runId, expectedWorktreePath(opts.projectSlug, runId));
+  let handle;
+  try {
+    handle = await client.workflow.start('greenfieldWorkflow', {
+      args: [{
+        projectPath: opts.projectPath,
+        projectSlug: opts.projectSlug,
+        runId,
+        userRequest: opts.userRequest,
+      }],
+      taskQueue: 'atelier-default-ts',
+      workflowId,
+    });
+  } catch (err) {
+    runs.complete(runId, 'failed', Date.now(), JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+    throw err;
+  }
+  settleRun(runId, handle.result());
   return { runId, workflowId: handle.workflowId };
 });
 
 register('workflow.start', async (opts: { name: string; input?: unknown }) => {
+  const supported: Record<string, string> = {
+    mvp: 'mvpWorkflow',
+    featurePipeline: 'featurePipeline',
+  };
+  const workflowType = supported[opts.name];
+  if (!workflowType) {
+    throw new Error(`Workflow "${opts.name}" is not launchable from the generic runner`);
+  }
   const client = await getTemporalClient();
+  agentStreamManager.killAll();
   const runId = `${opts.name}-${Date.now()}`;
-  const workflowType = opts.name.endsWith('Workflow') ? opts.name : `${opts.name}Workflow`;
-  const handle = await client.workflow.start(workflowType, {
-    args: [opts.input ?? {}],
-    taskQueue: 'atelier-default-ts',
-    workflowId: `${opts.name}-${runId}`,
-  });
+  runs.insert(
+    runId,
+    'unknown',
+    opts.name,
+    `${opts.name}-${runId}`,
+    'running',
+    Date.now(),
+    JSON.stringify(opts.input ?? {}),
+  );
+  let handle;
+  try {
+    handle = await client.workflow.start(workflowType, {
+      args: [opts.input ?? {}],
+      taskQueue: 'atelier-default-ts',
+      workflowId: `${opts.name}-${runId}`,
+    });
+  } catch (err) {
+    runs.complete(runId, 'failed', Date.now(), JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+    throw err;
+  }
+  settleRun(runId, handle.result());
   return { runId, workflowId: handle.workflowId };
 });

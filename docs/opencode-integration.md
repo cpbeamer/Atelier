@@ -22,11 +22,11 @@ The autopilot workflow now starts a per-run `opencode serve` subprocess at the t
 
 ## Enable
 
-Open Settings (gear icon in the sidebar) and toggle "Use opencode for the developer agent". The setting persists across restarts.
+Open Settings (gear icon in the sidebar) and choose `opencode` under "Agent CLI runtime". The setting persists across restarts.
 
 For headless / standalone-worker development, set `ATELIER_USE_OPENCODE=1` in the worker's environment as a fallback. The worker resolves the flag from the backend first; if the backend is unreachable, it consults the env var.
 
-> **Migration note:** if you previously enabled opencode via `ATELIER_USE_OPENCODE=1`, also flip the Settings toggle on after upgrading. The backend setting is now authoritative when reachable, and its default is off — so an env-var-only setup will appear "off" once the backend value loads.
+> **Migration note:** the old `useOpencode` setting is migrated automatically. `true` becomes `agentRuntime=opencode`; `false` becomes `agentRuntime=direct-llm`. For standalone worker development, `ATELIER_AGENT_RUNTIME=opencode` is preferred, while `ATELIER_USE_OPENCODE=1` remains supported as a fallback.
 
 ## Provider configuration
 
