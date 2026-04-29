@@ -53,6 +53,8 @@ import { createOpencodeClient } from '@opencode-ai/sdk';
 import { stripThinking } from './callLLM.js';
 
 const BACKEND = process.env.ATELIER_BACKEND_URL || 'http://localhost:3001';
+const AGENT_PROMPT_TIMEOUT_MS = 3 * 60 * 1000;
+const runPromptQueues = new Map<string, Promise<void>>();
 
 export interface ServeRunInfo {
   runId: string;
@@ -70,6 +72,8 @@ export interface ServeMessageInput {
   /** Optional model override (e.g. "primary/MiniMax-M2.7"). Defaults to whatever
    *  the bootstrapped opencode.json declares as `model`. */
   model?: string;
+  /** Agent pane that should receive opencode SSE progress for this prompt. */
+  progressAgentId?: string;
 }
 
 export interface ServeMessageOutput {
@@ -128,6 +132,141 @@ async function ensureSession(runId: string, persona: string): Promise<string> {
   return sessionId;
 }
 
+async function emitAgentText(agentId: string, text: string): Promise<void> {
+  await emitAgentEvent(agentId, { kind: 'text', text });
+}
+
+async function emitAgentEvent(agentId: string, event: Record<string, unknown>): Promise<void> {
+  try {
+    await fetch(`${BACKEND}/api/agent/event`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: agentId, event }),
+    });
+  } catch {
+    // UI progress is best-effort; the actual agent call should continue.
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`)), ms);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
+}
+
+async function withRunPromptSlot<T>(runId: string, fn: () => Promise<T>): Promise<T> {
+  const previous = runPromptQueues.get(runId) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => { release = resolve; });
+  const stored = previous.catch(() => {}).then(() => current);
+  runPromptQueues.set(runId, stored);
+
+  await previous.catch(() => {});
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (runPromptQueues.get(runId) === stored) {
+      runPromptQueues.delete(runId);
+    }
+  }
+}
+
+function summarizeOpencodeInput(input: unknown): unknown {
+  if (!input || typeof input !== 'object') return input;
+  const obj = input as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of ['file', 'path', 'pattern', 'query', 'command', 'description', 'url']) {
+    if (typeof obj[key] === 'string') out[key] = obj[key];
+  }
+  return Object.keys(out).length > 0 ? out : obj;
+}
+
+function startOpencodeEventBridge(client: any, sessionId: string, agentId: string): () => void {
+  const controller = new AbortController();
+  const seenToolStates = new Map<string, string>();
+
+  void (async () => {
+    try {
+      const result = await client.event.subscribe({ signal: controller.signal });
+      for await (const data of result.stream) {
+        if (controller.signal.aborted) break;
+        const payload = (data as any)?.payload;
+        if (!payload || typeof payload.type !== 'string') continue;
+
+        if (payload.type === 'message.part.updated') {
+          const part = payload.properties?.part;
+          if (!part || part.sessionID !== sessionId) continue;
+
+          if (part.type === 'reasoning') {
+            const text = payload.properties?.delta ?? part.text;
+            if (typeof text === 'string' && text.trim()) {
+              await emitAgentEvent(agentId, { kind: 'thinking', text, ts: Date.now() });
+            }
+            continue;
+          }
+
+          if (part.type === 'tool') {
+            const toolId = part.callID || part.id;
+            const state = part.state?.status ?? 'pending';
+            const stateKey = `${state}:${part.state?.title ?? ''}:${part.state?.output?.length ?? 0}:${part.state?.error ?? ''}`;
+            if (seenToolStates.get(toolId) === stateKey) continue;
+            seenToolStates.set(toolId, stateKey);
+
+            if (state === 'pending' || state === 'running') {
+              await emitAgentEvent(agentId, {
+                kind: 'tool_use',
+                toolId,
+                name: part.tool,
+                input: summarizeOpencodeInput(part.state?.input),
+                ts: Date.now(),
+              });
+            } else {
+              await emitAgentEvent(agentId, {
+                kind: 'tool_result',
+                toolId,
+                content: part.state?.output ?? part.state?.error ?? part.state?.title ?? state,
+                isError: state === 'error',
+                ts: Date.now(),
+              });
+            }
+            continue;
+          }
+        }
+
+        if (payload.type === 'session.status' && payload.properties?.sessionID === sessionId) {
+          const status = payload.properties.status;
+          if (status?.type === 'retry') {
+            await emitAgentText(agentId, `\n↳ provider retry ${status.attempt}: ${status.message}`);
+          }
+        }
+
+        if (payload.type === 'session.error' && payload.properties?.sessionID === sessionId) {
+          await emitAgentEvent(agentId, {
+            kind: 'stderr',
+            text: `opencode session error: ${JSON.stringify(payload.properties.error ?? {}).slice(0, 500)}`,
+            ts: Date.now(),
+          });
+        }
+      }
+    } catch (e) {
+      if (!controller.signal.aborted) {
+        await emitAgentEvent(agentId, {
+          kind: 'stderr',
+          text: `opencode event stream ended: ${e instanceof Error ? e.message : String(e)}`,
+          ts: Date.now(),
+        });
+      }
+    }
+  })();
+
+  return () => controller.abort();
+}
+
 export async function sendDeveloperPrompt(input: ServeMessageInput): Promise<ServeMessageOutput> {
   const info = await getServeRunInfo(input.runId);
   const client = buildClient(info);
@@ -136,15 +275,23 @@ export async function sendDeveloperPrompt(input: ServeMessageInput): Promise<Ser
   // The backend's run registry caches sessionId per persona, so this is a
   // cheap lookup after the first call.
   const sessionId = await ensureSession(input.runId, input.persona);
+  const stopEvents = input.progressAgentId
+    ? startOpencodeEventBridge(client, sessionId, input.progressAgentId)
+    : undefined;
 
   const modelRef = parseModelRef(input.model);
-  const result = await client.session.prompt({
-    path: { id: sessionId },
-    body: {
-      parts: [{ type: 'text', text: input.prompt }],
-      ...(modelRef ? { model: modelRef } : {}),
-    },
-  });
+  let result;
+  try {
+    result = await client.session.prompt({
+      path: { id: sessionId },
+      body: {
+        parts: [{ type: 'text', text: input.prompt }],
+        ...(modelRef ? { model: modelRef } : {}),
+      },
+    });
+  } finally {
+    stopEvents?.();
+  }
 
   if (result.error) {
     const errBody = JSON.stringify(result.error).slice(0, 500);
@@ -205,6 +352,25 @@ export async function sendAgentPrompt(input: AgentPromptInput): Promise<string> 
     'IMPORTANT: Respond with ONLY valid JSON. No prose, no markdown fences, no text outside the JSON structure.',
   ].join('\n');
 
-  const result = await sendDeveloperPrompt({ runId, persona: personaKey, prompt, model });
-  return stripThinking(result.text);
+  await emitAgentText(personaKey, '\n↳ opencode session running…');
+  const startedAt = Date.now();
+  const heartbeat = setInterval(() => {
+    const seconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+    void emitAgentText(personaKey, `\n↳ still working (${seconds}s)…`);
+  }, 10_000);
+  try {
+    await emitAgentText(personaKey, '\n↳ waiting for opencode prompt slot…');
+    const result = await withRunPromptSlot(runId, async () => {
+      await emitAgentText(personaKey, '\n↳ opencode prompt active…');
+      return await withTimeout(
+        sendDeveloperPrompt({ runId, persona: personaKey, prompt, model, progressAgentId: personaKey }),
+        AGENT_PROMPT_TIMEOUT_MS,
+        `opencode prompt for ${personaKey}`,
+      );
+    });
+    await emitAgentText(personaKey, `\n↳ response received (${Math.round((Date.now() - startedAt) / 1000)}s)`);
+    return stripThinking(result.text);
+  } finally {
+    clearInterval(heartbeat);
+  }
 }

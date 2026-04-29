@@ -1,7 +1,9 @@
 // backend/src/ipc-handlers.ts
 import { projects, runs, milestones, modelConfig } from './db.js';
 import { appSettings } from './app-settings.js';
+import { AGENT_RUNTIMES, DEFAULT_AGENT_RUNTIME, isAgentRuntimeId, runtimeFromLegacyUseOpencode, type AgentRuntimeId } from './agent-runtime.js';
 import { ptyManager } from './pty-manager.js';
+import { agentStreamManager } from './agent-stream.js';
 import { createWorktree, removeWorktree } from './worktree.js';
 import { startSidecar, stopSidecar, getSidecarStatus } from './sidecar-lifecycle.js';
 import { createMilestone, resolveMilestone, getPendingMilestones } from './milestone-service.js';
@@ -28,6 +30,17 @@ function register(name: string, handler: (opts: any) => Promise<any>) {
 
 function keychainKey(providerId: string, key: string) {
   return `${KEYCHAIN_PREFIX}${providerId}.${key}`;
+}
+
+function getAgentRuntimeSetting(): AgentRuntimeId {
+  const current = appSettings.get('agentRuntime');
+  if (isAgentRuntimeId(current)) return current;
+  const migrated = runtimeFromLegacyUseOpencode(appSettings.get('useOpencode'));
+  if (migrated) {
+    appSettings.set('agentRuntime', migrated);
+    return migrated;
+  }
+  return DEFAULT_AGENT_RUNTIME;
 }
 
 // Existing handlers
@@ -216,7 +229,7 @@ register('settings.modelConfig:remove', async (opts: { id: string }) => {
 });
 
 register('settings.useOpencode:get', async () => {
-  return { useOpencode: appSettings.getBool('useOpencode', true) };
+  return { useOpencode: getAgentRuntimeSetting() === 'opencode' };
 });
 
 register('settings.useOpencode:set', async (opts: { useOpencode: boolean }) => {
@@ -224,7 +237,20 @@ register('settings.useOpencode:set', async (opts: { useOpencode: boolean }) => {
     throw new Error('useOpencode must be a boolean');
   }
   appSettings.set('useOpencode', opts.useOpencode ? 'true' : 'false');
+  appSettings.set('agentRuntime', opts.useOpencode ? 'opencode' : 'direct-llm');
   return { ok: true };
+});
+
+register('settings.agentRuntime:get', async () => {
+  return { agentRuntime: getAgentRuntimeSetting(), runtimes: AGENT_RUNTIMES };
+});
+
+register('settings.agentRuntime:set', async (opts: { agentRuntime: AgentRuntimeId }) => {
+  if (!isAgentRuntimeId(opts?.agentRuntime)) {
+    throw new Error('agentRuntime must be opencode, claude-code, or direct-llm');
+  }
+  appSettings.set('agentRuntime', opts.agentRuntime);
+  return { ok: true, agentRuntime: opts.agentRuntime };
 });
 
 register('settings.apiKey:get', async (opts: { providerId: string }) => {
@@ -344,6 +370,34 @@ register('app.preflight', async () => {
       : 'Set a primary provider in Settings',
     required: true,
   });
+  const selectedRuntime = getAgentRuntimeSetting();
+  checks.push({
+    id: 'agent-runtime',
+    label: 'Agent CLI runtime',
+    ok: true,
+    detail: AGENT_RUNTIMES.find((runtime) => runtime.id === selectedRuntime)?.label ?? selectedRuntime,
+    required: true,
+  });
+  for (const runtime of AGENT_RUNTIMES.filter((candidate) => candidate.requiresBinary)) {
+    try {
+      const { stdout } = await execFileAsync(runtime.requiresBinary!, ['--version']);
+      checks.push({
+        id: `runtime-${runtime.id}`,
+        label: `${runtime.label} CLI`,
+        ok: true,
+        detail: stdout.trim() || `${runtime.requiresBinary} found`,
+        required: selectedRuntime === runtime.id,
+      });
+    } catch (e) {
+      checks.push({
+        id: `runtime-${runtime.id}`,
+        label: `${runtime.label} CLI`,
+        ok: false,
+        detail: e instanceof Error ? e.message : String(e),
+        required: selectedRuntime === runtime.id,
+      });
+    }
+  }
   return {
     ok: checks.every((c) => !c.required || c.ok),
     checks,
@@ -352,6 +406,7 @@ register('app.preflight', async () => {
 
 register('autopilot.start', async (opts: { projectPath: string; projectSlug: string; suggestedFeatures?: string[] }) => {
   const client = await getTemporalClient();
+  agentStreamManager.killAll();
   const runId = `autopilot-${Date.now()}`;
   const workflowId = `autopilot-${opts.projectSlug}-${runId}`;
   runs.insert(
@@ -387,6 +442,7 @@ register('autopilot.start', async (opts: { projectPath: string; projectSlug: str
 
 register('greenfield.start', async (opts: { projectPath: string; projectSlug: string; userRequest: string }) => {
   const client = await getTemporalClient();
+  agentStreamManager.killAll();
   const runId = `greenfield-${Date.now()}`;
   const workflowId = `greenfield-${opts.projectSlug}-${runId}`;
   runs.insert(
@@ -429,6 +485,7 @@ register('workflow.start', async (opts: { name: string; input?: unknown }) => {
     throw new Error(`Workflow "${opts.name}" is not launchable from the generic runner`);
   }
   const client = await getTemporalClient();
+  agentStreamManager.killAll();
   const runId = `${opts.name}-${Date.now()}`;
   runs.insert(
     runId,

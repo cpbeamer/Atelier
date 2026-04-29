@@ -207,6 +207,14 @@ class AgentStreamManager {
     return this.agents.get(id)?.events ?? [];
   }
 
+  clear(id: string) {
+    const instance = this.agents.get(id);
+    if (instance) {
+      try { instance.child?.kill?.(); } catch {}
+      this.agents.delete(id);
+    }
+  }
+
   /**
    * Push an event into the stream for an agent ID that has no spawned child —
    * used by workflow activities to surface M2.7 progress in the matching UI pane.

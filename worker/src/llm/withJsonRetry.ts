@@ -25,6 +25,7 @@ export async function withJsonRetry<T = unknown>(
   const maxAttempts = Math.max(1, opts.maxAttempts ?? 3);
   const validate = opts.validate ?? (() => true);
   let lastErr = '';
+  let lastRaw = '';
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const suffix = attempt === 0
@@ -32,13 +33,15 @@ export async function withJsonRetry<T = unknown>(
       : `\n\nYour previous response was rejected (${lastErr}). Return ONLY a valid JSON value — no prose, no markdown fences, no commentary before or after.`;
 
     const raw = await llm(suffix);
+    lastRaw = raw;
     const parsed = tryParse(raw);
     if (parsed === undefined) { lastErr = 'output was not parseable JSON'; continue; }
     if (!validate(parsed)) { lastErr = 'output failed schema validation'; continue; }
     return parsed as T;
   }
 
-  throw new Error(`withJsonRetry: failed after ${maxAttempts} attempts — ${lastErr}`);
+  const sample = lastRaw.trim().replace(/\s+/g, ' ').slice(0, 500);
+  throw new Error(`withJsonRetry: failed after ${maxAttempts} attempts — ${lastErr}. Last output: ${sample || '(empty)'}`);
 }
 
 /** Attempt a direct JSON.parse, then fall back to extracting the first

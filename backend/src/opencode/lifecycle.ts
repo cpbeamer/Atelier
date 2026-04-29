@@ -10,6 +10,7 @@ const processes = new Map<string, ChildProcess>();
 export async function startOpencodeServer(
   runId: string,
   worktreePath: string,
+  extraEnv: Record<string, string> = {},
 ): Promise<{ port: number; password: string }> {
   if (runRegistry.get(runId)) {
     throw new Error(`opencode server already running for ${runId}`);
@@ -20,7 +21,7 @@ export async function startOpencodeServer(
     ['serve', '--port', '0', '--hostname', '127.0.0.1'],
     {
       cwd: worktreePath,
-      env: { ...process.env, OPENCODE_SERVER_PASSWORD: password },
+      env: { ...process.env, ...extraEnv, OPENCODE_SERVER_PASSWORD: password },
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   );

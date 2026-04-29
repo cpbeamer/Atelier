@@ -48,8 +48,9 @@ function App() {
   const [autopilotError, setAutopilotError] = useState<string | null>(null);
 
   useEffect(() => {
-    const unsubStarted = subscribe('agent:started', (payload: { agentId: string; agentName: string; terminalType: 'terminal' | 'direct-llm' }) => {
+    const unsubStarted = subscribe('agent:started', (payload: { agentId: string; agentName: string; terminalType: 'terminal' | 'direct-llm'; runId?: string }) => {
       if (!payload?.agentId) return;
+      if (activeRun && payload.runId && payload.runId !== activeRun) return;
       setPanes((prev) => {
         const idx = prev.findIndex((p) => p.id === payload.agentId);
         if (idx >= 0) {
@@ -70,8 +71,9 @@ function App() {
         }];
       });
     });
-    const unsubCompleted = subscribe('agent:completed', (payload: { agentId: string; status?: 'completed' | 'error' }) => {
+    const unsubCompleted = subscribe('agent:completed', (payload: { agentId: string; status?: 'completed' | 'error'; runId?: string }) => {
       if (!payload?.agentId) return;
+      if (activeRun && payload.runId && payload.runId !== activeRun) return;
       setPanes((prev) => prev.map((p) => p.id === payload.agentId
         ? { ...p, status: payload.status === 'error' ? 'killed' : 'exited' }
         : p));
@@ -80,10 +82,12 @@ function App() {
       unsubStarted();
       unsubCompleted();
     };
-  }, []);
+  }, [activeRun]);
 
   const startAutopilot = useCallback(async (project: Project) => {
     setAutopilotError(null);
+    setActiveRun(null);
+    setActiveWorkflowType('autopilot');
     const live = AUTOPILOT_PANES.map((p) => ({ ...p, status: 'waiting' as const }));
     setPanes(live);
     setWorkflowActive(true);
