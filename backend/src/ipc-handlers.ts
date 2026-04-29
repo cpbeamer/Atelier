@@ -206,7 +206,7 @@ register('settings.modelConfig:remove', async (opts: { id: string }) => {
 });
 
 register('settings.useOpencode:get', async () => {
-  return { useOpencode: appSettings.getBool('useOpencode', false) };
+  return { useOpencode: appSettings.getBool('useOpencode', true) };
 });
 
 register('settings.useOpencode:set', async (opts: { useOpencode: boolean }) => {

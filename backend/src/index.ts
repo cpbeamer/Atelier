@@ -522,7 +522,7 @@ const httpServer = http.createServer(async (req, res) => {
   // GET /api/settings/useOpencode — returns { useOpencode: boolean }
   if (req.method === 'GET' && url.pathname === '/api/settings/useOpencode') {
     try {
-      const value = appSettings.getBool('useOpencode', false);
+      const value = appSettings.getBool('useOpencode', true);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ useOpencode: value }));
     } catch (err) {

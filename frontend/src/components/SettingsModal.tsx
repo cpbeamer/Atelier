@@ -47,7 +47,7 @@ export function SettingsModal({ isOpen, onClose }: Props) {
   const [apiKeyInput, setApiKeyInput] = useState<{ providerId: string; value: string } | null>(null);
   const [customDraft, setCustomDraft] = useState<CustomDraft | null>(null);
   const [customError, setCustomError] = useState<string | null>(null);
-  const [useOpencodeFlag, setUseOpencodeFlag] = useState<boolean>(false);
+  const [useOpencodeFlag, setUseOpencodeFlag] = useState<boolean>(true);
   const [useOpencodeLoading, setUseOpencodeLoading] = useState(false);
 
   useEffect(() => {
@@ -174,7 +174,38 @@ export function SettingsModal({ isOpen, onClose }: Props) {
         </div>
 
         <div className="flex-1 overflow-y-auto px-6 py-5">
-          <div className="text-[12px] text-[var(--color-text-faint)] mb-3">Model providers</div>
+          <div className="text-[12px] text-[var(--color-text-faint)] mb-3">
+            Implementation backend
+          </div>
+          <div className="rounded-lg border border-[var(--color-hair)] bg-[var(--color-surface-2)]/50 p-4 mb-6">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="text-[13.5px] font-medium mb-1">
+                  Use opencode for the developer agent
+                </div>
+                <div className="text-[12px] text-[var(--color-text-muted)] leading-relaxed">
+                  When on, the developer agent runs as a tool-using opencode session
+                  inside the worktree (Read, Edit, Bash, Grep). When off, the developer
+                  uses the legacy one-shot LLM dictation path.
+                </div>
+              </div>
+              <label className="flex items-center gap-1.5 text-[12px] cursor-pointer shrink-0 pt-1">
+                <input
+                  type="checkbox"
+                  checked={useOpencodeFlag}
+                  disabled={useOpencodeLoading}
+                  onChange={handleToggleUseOpencode}
+                  className="w-3 h-3 accent-[var(--color-accent)]"
+                />
+                <span className="text-[var(--color-text-muted)]">
+                  {useOpencodeFlag ? 'On' : 'Off'}
+                </span>
+              </label>
+            </div>
+          </div>
+
+          <div className="pt-5 border-t border-[var(--color-hair)]">
+            <div className="text-[12px] text-[var(--color-text-faint)] mb-3">Model providers</div>
 
           <div className="relative mb-5">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--color-text-muted)]" />
@@ -227,37 +258,6 @@ export function SettingsModal({ isOpen, onClose }: Props) {
           {!loading && providers.length > 0 && configured.length === 0 && available.length === 0 && (
             <p className="text-[13px] text-[var(--color-text-muted)]">No providers match "{search}".</p>
           )}
-
-          <div className="mt-6 pt-5 border-t border-[var(--color-hair)]">
-            <div className="text-[12px] text-[var(--color-text-faint)] mb-3">
-              Implementation backend
-            </div>
-            <div className="rounded-lg border border-[var(--color-hair)] bg-[var(--color-surface-2)]/50 p-4">
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0">
-                  <div className="text-[13.5px] font-medium mb-1">
-                    Use opencode for the developer agent
-                  </div>
-                  <div className="text-[12px] text-[var(--color-text-muted)] leading-relaxed">
-                    When on, the developer agent runs as a tool-using opencode session
-                    inside the worktree (Read, Edit, Bash, Grep). When off, the developer
-                    uses the legacy one-shot LLM dictation path.
-                  </div>
-                </div>
-                <label className="flex items-center gap-1.5 text-[12px] cursor-pointer shrink-0 pt-1">
-                  <input
-                    type="checkbox"
-                    checked={useOpencodeFlag}
-                    disabled={useOpencodeLoading}
-                    onChange={handleToggleUseOpencode}
-                    className="w-3 h-3 accent-[var(--color-accent)]"
-                  />
-                  <span className="text-[var(--color-text-muted)]">
-                    {useOpencodeFlag ? 'On' : 'Off'}
-                  </span>
-                </label>
-              </div>
-            </div>
           </div>
 
           <div className="mt-6 pt-5 border-t border-[var(--color-hair)]">
