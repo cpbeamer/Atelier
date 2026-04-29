@@ -68,6 +68,15 @@ describe('buildOpencodeConfig', () => {
     const cfg = buildOpencodeConfig(provider());
     expect(cfg.$schema).toBe('https://opencode.ai/config.json');
   });
+
+  test('permissions are explicitly allowed for unattended serve sessions', () => {
+    const cfg = buildOpencodeConfig(provider());
+    expect(cfg.permission).toEqual({
+      edit: 'allow',
+      bash: 'allow',
+      webfetch: 'allow',
+    });
+  });
 });
 
 describe('writeOpencodeConfig', () => {
@@ -77,6 +86,7 @@ describe('writeOpencodeConfig', () => {
     const written = JSON.parse(readFileSync(join(dir, 'opencode.json'), 'utf-8'));
     expect(written.provider.primary.npm).toBe('@ai-sdk/openai-compatible');
     expect(written.model).toBe('primary/MiniMax-M2.7');
+    expect(written.permission).toEqual({ edit: 'allow', bash: 'allow', webfetch: 'allow' });
   });
 });
 

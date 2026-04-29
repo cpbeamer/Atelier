@@ -33,6 +33,11 @@ export interface OpencodeConfigShape {
     models: Record<string, { name: string }>;
   }>;
   model: string;
+  permission: {
+    edit: 'allow';
+    bash: 'allow';
+    webfetch: 'allow';
+  };
 }
 
 export function buildOpencodeConfig(provider: PrimaryProvider): OpencodeConfigShape {
@@ -54,6 +59,11 @@ export function buildOpencodeConfig(provider: PrimaryProvider): OpencodeConfigSh
       },
     },
     model: `primary/${model}`,
+    permission: {
+      edit: 'allow',
+      bash: 'allow',
+      webfetch: 'allow',
+    },
   };
 }
 
