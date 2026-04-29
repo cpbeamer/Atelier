@@ -1,12 +1,12 @@
 // frontend/src/App.tsx
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { TerminalGrid, TerminalPaneConfig } from './components/TerminalGrid';
 import { MilestoneInbox } from './components/MilestoneInbox';
 import { WorkflowGraph } from './components/WorkflowGraph';
 import { SettingsModal } from './components/SettingsModal';
 import type { Project } from './lib/db';
-import { invoke, send } from './lib/ipc';
+import { invoke, send, subscribe } from './lib/ipc';
 import { Inbox, AlertTriangle } from 'lucide-react';
 
 const AUTOPILOT_PANES: TerminalPaneConfig[] = [
@@ -32,6 +32,11 @@ const AUTOPILOT_CONNECTIONS = [
   { from: 'tester', to: 'pusher', type: 'parent-child' as const },
 ];
 
+interface PreflightResult {
+  ok: boolean;
+  checks: Array<{ id: string; label: string; ok: boolean; detail?: string; required: boolean }>;
+}
+
 function App() {
   const [activeProject, setActiveProject] = useState<Project | null>(null);
   const [activeRun, setActiveRun] = useState<string | null>(null);
@@ -42,12 +47,55 @@ function App() {
   const [workflowActive, setWorkflowActive] = useState(false);
   const [autopilotError, setAutopilotError] = useState<string | null>(null);
 
+  useEffect(() => {
+    const unsubStarted = subscribe('agent:started', (payload: { agentId: string; agentName: string; terminalType: 'terminal' | 'direct-llm' }) => {
+      if (!payload?.agentId) return;
+      setPanes((prev) => {
+        const idx = prev.findIndex((p) => p.id === payload.agentId);
+        if (idx >= 0) {
+          return prev.map((p) => p.id === payload.agentId
+            ? {
+                ...p,
+                agentName: payload.agentName || p.agentName,
+                agentType: payload.terminalType || p.agentType,
+                status: 'running',
+              }
+            : p);
+        }
+        return [...prev, {
+          id: payload.agentId,
+          agentName: payload.agentName || payload.agentId,
+          agentType: payload.terminalType || 'direct-llm',
+          status: 'running',
+        }];
+      });
+    });
+    const unsubCompleted = subscribe('agent:completed', (payload: { agentId: string; status?: 'completed' | 'error' }) => {
+      if (!payload?.agentId) return;
+      setPanes((prev) => prev.map((p) => p.id === payload.agentId
+        ? { ...p, status: payload.status === 'error' ? 'killed' : 'exited' }
+        : p));
+    });
+    return () => {
+      unsubStarted();
+      unsubCompleted();
+    };
+  }, []);
+
   const startAutopilot = useCallback(async (project: Project) => {
     setAutopilotError(null);
     const live = AUTOPILOT_PANES.map((p) => ({ ...p, status: 'waiting' as const }));
     setPanes(live);
     setWorkflowActive(true);
     try {
+      const preflight = await invoke<PreflightResult>('app.preflight');
+      if (!preflight.ok) {
+        const failed = preflight.checks
+          .filter((c) => c.required && !c.ok)
+          .map((c) => `${c.label}: ${c.detail || 'not available'}`)
+          .join('; ');
+        throw new Error(`Preflight failed: ${failed}`);
+      }
       const { runId } = await invoke<{ runId: string }>('autopilot.start', {
         projectPath: project.path,
         projectSlug: project.name.toLowerCase().replace(/\s+/g, '-'),
@@ -57,6 +105,7 @@ function App() {
       setActiveWorkflowType('autopilot');
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      setWorkflowActive(false);
       setAutopilotError(
         msg.includes('ECONNREFUSED') || msg.includes('No IPC handler')
           ? `Couldn't start autopilot: ${msg}. Is Temporal + the worker running? Try \`make dev\`.`
@@ -67,8 +116,8 @@ function App() {
 
   const handleProjectSelect = useCallback((project: Project) => {
     setActiveProject(project);
-    void startAutopilot(project);
-  }, [startAutopilot]);
+    invoke('db.openProject', { id: project.id }).catch(() => {});
+  }, []);
 
   const handleAutopilotSelect = useCallback(() => {
     if (activeProject) void startAutopilot(activeProject);

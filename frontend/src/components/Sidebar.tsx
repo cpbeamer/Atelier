@@ -64,11 +64,12 @@ export function Sidebar({ onProjectSelect, onWorkflowSelect, onSettingsClick, on
   }
 
   async function handleProjectClick(project: Project) {
-    setWorkflows([
-      { name: 'feature', language: 'typescript' },
-      { name: 'pm-validation', language: 'typescript' },
-      { name: 'research', language: 'python' },
-    ]);
+    try {
+      const list = await invoke<Array<{ name: string; language: 'typescript' | 'python' }>>('workflow.list', { projectId: project.id });
+      setWorkflows(list);
+    } catch {
+      setWorkflows([]);
+    }
     onProjectSelect?.(project);
   }
 
@@ -130,6 +131,11 @@ export function Sidebar({ onProjectSelect, onWorkflowSelect, onSettingsClick, on
 
         {activeProject && (
           <Section title="Workflows">
+            {workflows.length === 0 && (
+              <div className="px-3 py-1.5 text-[12px] text-[var(--color-text-faint)]">
+                No custom workflows
+              </div>
+            )}
             {workflows.map((wf) => (
               <button
                 key={wf.name}

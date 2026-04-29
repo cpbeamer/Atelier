@@ -1357,31 +1357,6 @@ Use your read tools to inspect the changed files. Evaluate strictly within your 
     const rawVerdicts = Object.fromEntries(
       REVIEWER_SPECIALISTS.map((specialist, i) => [specialist, verdicts[i + 1]])
     ) as Record<ReviewerSpecialist, Record<string, unknown>>;
-        const agentId = `reviewer-${specialist}`;
-        await notifyAgentStart({ agentId, agentName: `Reviewer (${specialist})`, terminalType: 'direct-llm' });
-        try {
-          const text = await sendAgentPrompt({
-            runId: runId ?? '',
-            personaKey: agentId,
-            personaText: panelPrompts[specialist],
-            userPrompt: sharedPromptBody,
-          });
-          const verdict = await withJsonRetry<Record<string, unknown>>(
-            () => Promise.resolve(text),
-            {
-              maxAttempts: 3,
-              validate: (v) => typeof v === 'object' && v !== null && 'approved' in (v as object),
-            },
-          );
-          await notifyAgentComplete({ agentId, status: 'completed', output: JSON.stringify(verdict).slice(0, 500) });
-          return [specialist, verdict] as const;
-        } catch (e) {
-          await notifyAgentComplete({ agentId, status: 'error', output: String(e).slice(0, 500) });
-          return [specialist, { approved: false, error: String(e) }] as const;
-        }
-      }),
-    );
-    const rawVerdicts = Object.fromEntries(verdicts) as Record<ReviewerSpecialist, Record<string, unknown>>;
 
     const synthPersona = await loadPersona(process.cwd(), 'reviewer-synthesizer');
     const synthAgentId = 'reviewer-synthesizer';

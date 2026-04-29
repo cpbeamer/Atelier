@@ -14,11 +14,11 @@ function createWindow() {
     titleBarOverlay: true
   });
 
-  // Open DevTools automatically
-  win.webContents.openDevTools();
-
   // In development, load from Vite
   const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
+  if (isDev && process.env.ATELIER_OPEN_DEVTOOLS === '1') {
+    win.webContents.openDevTools();
+  }
   console.log('[Electron] Creating window, isDev:', isDev);
   if (isDev) {
     console.log('[Electron] Loading http://localhost:5173');

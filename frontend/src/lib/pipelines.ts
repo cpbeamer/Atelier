@@ -30,6 +30,7 @@ export const PIPELINES: Record<string, PipelineNode[]> = {
     { agentId: 'developer', name: 'Developer', type: 'agent' },
     { agentId: 'reviewer', name: 'Code Reviewer', type: 'agent' },
     { agentId: 'tester', name: 'Tester', type: 'agent' },
+    { agentId: 'verifier', name: 'Verifier', type: 'agent' },
     { agentId: 'pusher', name: 'Pusher', type: 'agent' },
   ],
 };

@@ -26,6 +26,11 @@ interface CustomDraft {
   models: string;
 }
 
+interface PreflightResult {
+  ok: boolean;
+  checks: Array<{ id: string; label: string; ok: boolean; detail?: string; required: boolean }>;
+}
+
 const EMPTY_DRAFT: CustomDraft = {
   id: '',
   name: '',
@@ -49,6 +54,7 @@ export function SettingsModal({ isOpen, onClose }: Props) {
   const [customError, setCustomError] = useState<string | null>(null);
   const [useOpencodeFlag, setUseOpencodeFlag] = useState<boolean>(true);
   const [useOpencodeLoading, setUseOpencodeLoading] = useState(false);
+  const [preflight, setPreflight] = useState<PreflightResult | null>(null);
 
   useEffect(() => {
     if (isOpen) loadConfig();
@@ -62,6 +68,8 @@ export function SettingsModal({ isOpen, onClose }: Props) {
       setProviders(config);
       const flag = await invoke<{ useOpencode: boolean }>('settings.useOpencode:get');
       setUseOpencodeFlag(flag.useOpencode);
+      const preflightResult = await invoke<PreflightResult>('app.preflight');
+      setPreflight(preflightResult);
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -174,6 +182,32 @@ export function SettingsModal({ isOpen, onClose }: Props) {
         </div>
 
         <div className="flex-1 overflow-y-auto px-6 py-5">
+          <div className="text-[12px] text-[var(--color-text-faint)] mb-3">
+            Preflight
+          </div>
+          <div className="rounded-lg border border-[var(--color-hair)] bg-[var(--color-surface-2)]/50 p-4 mb-6">
+            {!preflight ? (
+              <div className="text-[12px] text-[var(--color-text-muted)]">Loading checks…</div>
+            ) : (
+              <div className="space-y-2">
+                {preflight.checks.map((check) => (
+                  <div key={check.id} className="flex items-start gap-2 text-[12px]">
+                    <span
+                      className="mt-[5px] w-1.5 h-1.5 rounded-full shrink-0"
+                      style={{ background: check.ok ? 'var(--color-success)' : 'var(--color-error)' }}
+                    />
+                    <div className="min-w-0">
+                      <div className="text-[var(--color-text)]">{check.label}</div>
+                      {check.detail && (
+                        <div className="font-mono text-[11px] text-[var(--color-text-muted)] break-all">{check.detail}</div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           <div className="text-[12px] text-[var(--color-text-faint)] mb-3">
             Implementation backend
           </div>
