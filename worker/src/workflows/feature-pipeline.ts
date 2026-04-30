@@ -9,6 +9,7 @@ const { createMilestone } = proxyActivities<typeof activities>({
 
 export interface PipelineInput {
   signal: string;  // User's task prompt
+  runId?: string;
 }
 
 export interface PipelineOutput {
@@ -19,7 +20,7 @@ export interface PipelineOutput {
 }
 
 export async function featurePipeline(input: PipelineInput): Promise<PipelineOutput> {
-  const { signal } = input;
+  const { signal, runId } = input;
   let currentPhase = 'research';
 
   try {
@@ -32,6 +33,8 @@ export async function featurePipeline(input: PipelineInput): Promise<PipelineOut
           agentName: 'Researcher A',
           persona: 'researcher-a',
           task: signal,
+          runId,
+          category: 'docs-research',
         }],
       }),
       executeChild<typeof agentChild>('agentChild', {
@@ -39,6 +42,8 @@ export async function featurePipeline(input: PipelineInput): Promise<PipelineOut
           agentName: 'Researcher B',
           persona: 'researcher-b',
           task: signal,
+          runId,
+          category: 'code-exploration',
         }],
       }),
     ]);
@@ -56,6 +61,8 @@ export async function featurePipeline(input: PipelineInput): Promise<PipelineOut
           'Researcher A': researchA,
           'Researcher B': researchB,
         },
+        runId,
+        category: 'writing',
       }],
     });
     console.log('Phase 2: Synthesis complete');
@@ -75,6 +82,8 @@ export async function featurePipeline(input: PipelineInput): Promise<PipelineOut
         persona: 'architect',
         task: signal,
         context: { synthesis },
+        runId,
+        category: 'architecture',
       }],
     });
     console.log('Phase 4: Architecture complete');
@@ -94,6 +103,8 @@ export async function featurePipeline(input: PipelineInput): Promise<PipelineOut
         persona: 'code-writer',
         task: signal,
         context: { design },
+        runId,
+        category: 'implementation',
       }],
     });
     console.log('Phase 6: Code writing complete');

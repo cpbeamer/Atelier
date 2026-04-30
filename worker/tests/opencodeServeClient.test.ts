@@ -1,4 +1,4 @@
-import { test, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { getServeRunInfo } from '../src/llm/opencodeServeClient';
 
 const ORIGINAL_FETCH = globalThis.fetch;
@@ -106,4 +106,50 @@ test('sendAgentPrompt throws when server is not running', async () => {
   await expect(
     sendAgentPrompt({ runId: 'no-server', personaKey: 'analyst', personaText: '', userPrompt: 'x' }),
   ).rejects.toThrow(/HTTP 404/);
+});
+
+// ── parseModelRef tests ────────────────────────────────────────────────────────
+
+import { parseModelRef } from '../src/llm/opencodeServeClient';
+
+describe('parseModelRef', () => {
+  test('parses valid "provider/model" string', () => {
+    const result = parseModelRef('primary/MiniMax-M2.7');
+    expect(result).toEqual({ providerID: 'primary', modelID: 'MiniMax-M2.7' });
+  });
+
+  test('parses "primary/default"', () => {
+    const result = parseModelRef('primary/default');
+    expect(result).toEqual({ providerID: 'primary', modelID: 'default' });
+  });
+
+  test('returns null for undefined input', () => {
+    expect(parseModelRef(undefined)).toBeNull();
+  });
+
+  test('returns null for empty string', () => {
+    expect(parseModelRef('')).toBeNull();
+  });
+
+  test('returns null when there is no slash', () => {
+    expect(parseModelRef('primaryMiniMax-M2.7')).toBeNull();
+  });
+
+  test('returns null when slash is at the start', () => {
+    expect(parseModelRef('/MiniMax-M2.7')).toBeNull();
+  });
+
+  test('returns null when slash is at the end', () => {
+    expect(parseModelRef('primary/')).toBeNull();
+  });
+
+  test('handles provider names with hyphens', () => {
+    const result = parseModelRef('openai/gpt-4o-mini');
+    expect(result).toEqual({ providerID: 'openai', modelID: 'gpt-4o-mini' });
+  });
+
+  test('handles slash-separated provider like openrouter', () => {
+    const result = parseModelRef('anthropic/claude-opus-4-7');
+    expect(result).toEqual({ providerID: 'anthropic', modelID: 'claude-opus-4-7' });
+  });
 });

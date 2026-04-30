@@ -28,3 +28,7 @@ backend/dist
 *.njsproj
 *.sln
 *.sw?
+
+# Agent directories
+.claude/
+.codex

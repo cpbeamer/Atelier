@@ -14,14 +14,22 @@
     "build": "bun run build:frontend && bun run build:backend",
     "build:frontend": "cd frontend && bun run build",
     "build:backend": "cd backend && bun build src/index.ts --target=bun --outdir dist",
-    "electron:build": "bun run build && electron-builder"
+    "electron:build": "bun run build && electron-builder",
+    "prepare": "husky install"
   },
   "devDependencies": {
     "concurrently": "^9.1.0",
     "cross-env": "^10.1.0",
     "electron": "^34.0.0",
     "electron-builder": "^25.1.8",
-    "wait-on": "^8.0.1"
+    "wait-on": "^8.0.1",
+    "@eslint/js": "^9.0.0",
+    "eslint": "^9.0.0",
+    "typescript": "^5.0.0",
+    "typescript-eslint": "^8.0.0",
+    "prettier": "^3.0.0",
+    "lint-staged": "^15.0.0",
+    "husky": "^9.0.0"
   },
   "dependencies": {
     "@types/react-grid-layout": "^2.1.0",

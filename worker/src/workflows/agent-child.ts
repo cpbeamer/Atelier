@@ -11,6 +11,8 @@ export interface AgentChildInput {
   persona: string;  // persona key e.g., 'researcher-a'
   task: string;
   context?: Record<string, string>;
+  runId?: string;
+  category?: string;
 }
 
 export async function agentChild(input: AgentChildInput): Promise<string> {
@@ -20,7 +22,9 @@ export async function agentChild(input: AgentChildInput): Promise<string> {
     input.agentName,
     input.persona,
     input.task,
-    input.context
+    input.context,
+    input.runId,
+    input.category,
   );
 
   console.log(`Agent child completed: ${input.agentName}`);

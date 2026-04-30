@@ -2,85 +2,138 @@ import { describe, test, expect } from 'bun:test';
 import { withJsonRetry } from '../src/llm/withJsonRetry';
 
 describe('withJsonRetry', () => {
-  test('returns parsed object on first success', async () => {
-    let calls = 0;
-    const llm = async () => { calls++; return '{"ok": true}'; };
-    const result = await withJsonRetry<{ ok: boolean }>(llm, { maxAttempts: 3 });
-    expect(result).toEqual({ ok: true });
-    expect(calls).toBe(1);
+  test('returns parsed value on first attempt when valid JSON', async () => {
+    const result = await withJsonRetry(() => Promise.resolve('{"key":"value"}'), {});
+    expect(result).toEqual({ key: 'value' });
   });
 
-  test('retries on parse failure up to maxAttempts', async () => {
-    let calls = 0;
-    const llm = async () => {
-      calls++;
-      return calls < 3 ? 'not json at all' : '{"ok": true}';
-    };
-    const result = await withJsonRetry<{ ok: boolean }>(llm, { maxAttempts: 3 });
-    expect(result).toEqual({ ok: true });
-    expect(calls).toBe(3);
+  test('returns parsed array on first attempt', async () => {
+    const result = await withJsonRetry(() => Promise.resolve('["a","b"]'), {});
+    expect(result).toEqual(['a', 'b']);
   });
 
-  test('throws after maxAttempts exhausted', async () => {
-    let calls = 0;
-    const llm = async () => { calls++; return 'never json'; };
-    try {
-      await withJsonRetry(llm, { maxAttempts: 2 });
-      throw new Error('should have thrown');
-    } catch (e) {
-      expect(String(e)).toContain('failed after 2 attempts');
-    }
-    expect(calls).toBe(2);
-  });
-
-  test('extracts JSON from prose wrapper', async () => {
-    const llm = async () => 'Here is the answer: {"ok": true}\n— the model';
-    const result = await withJsonRetry<{ ok: boolean }>(llm, { maxAttempts: 1 });
+  test('strips markdown fences and extracts JSON', async () => {
+    const result = await withJsonRetry(
+      () => Promise.resolve('```json\n{"ok":true}\n```'),
+      {},
+    );
     expect(result).toEqual({ ok: true });
   });
 
-  test('extracts JSON from markdown fences', async () => {
-    const llm = async () => '```json\n{"ok": true}\n```';
-    const result = await withJsonRetry<{ ok: boolean }>(llm, { maxAttempts: 1 });
+  test('strips plain markdown fences', async () => {
+    const result = await withJsonRetry(
+      () => Promise.resolve('```\n{"ok":true}\n```'),
+      {},
+    );
     expect(result).toEqual({ ok: true });
+  });
+
+  test('extracts JSON object from prose', async () => {
+    const result = await withJsonRetry(
+      () => Promise.resolve('Here is the result: {"key":"value"} and more text'),
+      {},
+    );
+    expect(result).toEqual({ key: 'value' });
   });
 
   test('extracts JSON array from prose', async () => {
-    const llm = async () => 'Tickets: [{"id":"A"},{"id":"B"}]';
-    const result = await withJsonRetry<Array<{ id: string }>>(llm, { maxAttempts: 1 });
-    expect(result).toEqual([{ id: 'A' }, { id: 'B' }]);
+    const result = await withJsonRetry(
+      () => Promise.resolve('Results: [1, 2, 3] are the numbers'),
+      {},
+    );
+    expect(result).toEqual([1, 2, 3]);
   });
 
-  test('validates against schema when provided', async () => {
-    const llm = async () => '{"name": "x"}';
-    const result = await withJsonRetry<{ name: string }>(llm, {
-      maxAttempts: 2,
-      validate: (v) => typeof v === 'object' && v !== null && 'name' in v,
-    });
-    expect(result.name).toBe('x');
+  test('retries on unparseable output and succeeds second time', async () => {
+    let attempts = 0;
+    const result = await withJsonRetry(() => {
+      attempts++;
+      if (attempts === 1) return Promise.resolve('not json at all');
+      return Promise.resolve('{"fixed":true}');
+    }, { maxAttempts: 3 });
+    expect(result).toEqual({ fixed: true });
+    expect(attempts).toBe(2);
   });
 
-  test('retries when validation fails', async () => {
-    let calls = 0;
-    const llm = async () => { calls++; return calls === 1 ? '{"wrong": "shape"}' : '{"name": "x"}'; };
-    await withJsonRetry<{ name: string }>(llm, {
+  test('retries on failed validation and succeeds second time', async () => {
+    let attempts = 0;
+    const result = await withJsonRetry(() => {
+      attempts++;
+      if (attempts === 1) return Promise.resolve('{"bad":true}');
+      return Promise.resolve('{"good":true}');
+    }, {
       maxAttempts: 3,
-      validate: (v) => typeof v === 'object' && v !== null && 'name' in (v as object),
+      validate: (v: unknown) => (v as any).good === true,
     });
-    expect(calls).toBe(2);
+    expect(result).toEqual({ good: true });
+    expect(attempts).toBe(2);
   });
 
-  test('passes reprompt suffix on retries', async () => {
-    const seenSuffixes: (string | undefined)[] = [];
-    let calls = 0;
-    const llm = async (suffix?: string) => {
-      seenSuffixes.push(suffix);
-      calls++;
-      return calls < 3 ? 'junk' : '{"ok":1}';
-    };
-    await withJsonRetry(llm, { maxAttempts: 3 });
-    expect(seenSuffixes[0]).toBeUndefined();
-    expect(typeof seenSuffixes[1]).toBe('string');
-    expect(typeof seenSuffixes[2]).toBe('string');
+  test('throws after maxAttempts when output never parseable', async () => {
+    await expect(
+      withJsonRetry(() => Promise.resolve('still not json'), { maxAttempts: 3 }),
+    ).rejects.toThrow(/failed after 3 attempts/);
+    await expect(
+      withJsonRetry(() => Promise.resolve('still not json'), { maxAttempts: 3 }),
+    ).rejects.toThrow(/not parseable JSON/);
+  });
+
+  test('throws after maxAttempts when validation always fails', async () => {
+    await expect(
+      withJsonRetry(() => Promise.resolve('{"bad":true}'), {
+        maxAttempts: 2,
+        validate: (v: unknown) => (v as any).good === true,
+      }),
+    ).rejects.toThrow(/failed after 2 attempts/);
+    await expect(
+      withJsonRetry(() => Promise.resolve('{"bad":true}'), {
+        maxAttempts: 2,
+        validate: (v: unknown) => (v as any).good === true,
+      }),
+    ).rejects.toThrow(/failed schema validation/);
+  });
+
+  test('default maxAttempts is 3', async () => {
+    let attempts = 0;
+    await expect(
+      withJsonRetry(() => {
+        attempts++;
+        return Promise.resolve('invalid');
+      }, {}),
+    ).rejects.toThrow(/failed after 3 attempts/);
+    expect(attempts).toBe(3);
+  });
+
+  test('appends retry reminder suffix after first failure', async () => {
+    const suffixes: string[] = [];
+    let callCount = 0;
+    await withJsonRetry(async (suffix) => {
+      callCount++;
+      if (suffix) suffixes.push(suffix);
+      if (callCount === 1) return 'not json at all';
+      return '{"fixed":true}';
+    }, { maxAttempts: 3 });
+    expect(callCount).toBe(2);
+    expect(suffixes.length).toBe(1);
+    expect(suffixes[0]).toContain('previous response was rejected');
+    expect(suffixes[0]).toContain('Return ONLY a valid JSON');
+  });
+
+  test('throws with truncated sample of last output', async () => {
+    const longOutput = 'x'.repeat(1000);
+    await expect(
+      withJsonRetry(() => Promise.resolve(longOutput), { maxAttempts: 1 }),
+    ).rejects.toThrow(/x{500}/);
+  });
+
+  test('throws with (empty) when output was empty', async () => {
+    await expect(
+      withJsonRetry(() => Promise.resolve(''), { maxAttempts: 1 }),
+    ).rejects.toThrow(/\(empty\)/);
+  });
+
+  test('default validate always returns true (accepts any parsed JSON)', async () => {
+    const result = await withJsonRetry(() => Promise.resolve('42'), {});
+    expect(result).toBe(42);
   });
 });

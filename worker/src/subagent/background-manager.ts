@@ -7,6 +7,7 @@ import { callLLM, getPrimaryModelName } from '../llm/callLLM.js';
 import { withJsonRetry } from '../llm/withJsonRetry.js';
 import { notifyAgentStart, notifyAgentComplete } from '../activities.js';
 import { useOpencode } from '../llm/featureFlags.js';
+import { contextBroker } from './context-broker.js';
 
 export class CircuitBreakerError extends Error {
   name = 'CircuitBreakerError';
@@ -79,7 +80,7 @@ export class BackgroundManager {
     agentId: string,
     agentName: string,
     parentSessionId?: string,
-    options: { timeoutMs?: number; model?: string; cwd?: string; runId?: string } = {},
+    options: { timeoutMs?: number; model?: string; cwd?: string; runId?: string; category?: string; includeRunContext?: boolean } = {},
   ): Promise<string> {
     const taskId = `atelier-sub-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
@@ -124,7 +125,7 @@ export class BackgroundManager {
       agentName: string;
       parentSessionId?: string;
     }>,
-    options: { timeoutMs?: number; model?: string; cwd?: string; runId?: string } = {},
+    options: { timeoutMs?: number; model?: string; cwd?: string; runId?: string; category?: string; includeRunContext?: boolean } = {},
   ): Promise<SubagentTask[]> {
     const taskIds = await Promise.all(
       tasks.map((t) =>
@@ -136,7 +137,7 @@ export class BackgroundManager {
 
   private async launchAsync(
     task: SubagentTask,
-    options: { timeoutMs?: number; model?: string; cwd?: string; runId?: string },
+    options: { timeoutMs?: number; model?: string; cwd?: string; runId?: string; category?: string; includeRunContext?: boolean },
   ): Promise<void> {
     task.status = 'running';
     task.startedAt = Date.now();
@@ -145,6 +146,7 @@ export class BackgroundManager {
       agentId: task.agentId,
       agentName: task.agentName,
       terminalType: 'direct-llm',
+      runId: options.runId,
     });
 
     const timeoutMs = options.timeoutMs ?? this.defaultTimeoutMs;
@@ -156,6 +158,10 @@ export class BackgroundManager {
 
     try {
       const persona = await this.loadPersona(task.personaKey);
+      const sharedContext = options.includeRunContext === false
+        ? ''
+        : await contextBroker.formatForPrompt(options.runId);
+      const prompt = `${task.prompt}${sharedContext}`;
       let result: string;
 
       if (await useOpencode()) {
@@ -163,11 +169,11 @@ export class BackgroundManager {
           runId: options.runId ?? '',
           personaKey: task.agentId,
           personaText: persona,
-          userPrompt: task.prompt,
+          userPrompt: prompt,
           model: options.model,
         });
       } else {
-        result = await callLLM(persona, task.prompt, {
+        result = await callLLM(persona, prompt, {
           cwd: options.cwd,
           agentId: task.agentId,
           runId: options.runId,
@@ -185,12 +191,21 @@ export class BackgroundManager {
       task.completedAt = Date.now();
     }
 
+    await contextBroker.recordAgentResult(options.runId, {
+      agentId: task.agentId,
+      agentName: task.agentName,
+      category: options.category,
+      output: task.result,
+      error: task.error,
+    });
+
     await notifyAgentComplete({
       agentId: task.agentId,
       status: task.status === 'completed' ? 'completed' : 'error',
       output: task.status === 'completed'
         ? (task.result?.slice(0, 500) ?? '')
         : (task.error?.slice(0, 500) ?? ''),
+      runId: options.runId,
     });
   }
 

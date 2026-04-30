@@ -4,7 +4,7 @@ import { proxyActivities } from '@temporalio/workflow';
 const activityDefaults = { startToCloseTimeout: '10 minutes' };
 
 const { spawnAgent, createMilestone: activityCreateMilestone } = proxyActivities<{
-  spawnAgent: (agentName: string, persona: string, task: string, context?: Record<string, string>) => Promise<string>;
+  spawnAgent: (agentName: string, persona: string, task: string, context?: Record<string, string>, runId?: string, category?: string) => Promise<string>;
   createMilestone: (name: string, payload: unknown) => Promise<{ verdict: string; reason?: string; decidedBy: string }>;
 }>(activityDefaults);
 
@@ -12,9 +12,11 @@ export async function callAgent(
   agentName: string,
   persona: string,
   task: string,
-  context?: Record<string, string>
+  context?: Record<string, string>,
+  runId?: string,
+  category?: string,
 ): Promise<string> {
-  return spawnAgent(agentName, persona, task, context);
+  return spawnAgent(agentName, persona, task, context, runId, category);
 }
 
 export async function milestone(

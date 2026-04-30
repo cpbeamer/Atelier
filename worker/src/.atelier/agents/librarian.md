@@ -24,6 +24,14 @@ Respond with this exact JSON structure:
 
 ```json
 {
+  "facts": ["stable facts later agents should know"],
+  "fileFindings": [
+    {
+      "path": "relative/file/path.ext",
+      "summary": "why this file matters or what convention it establishes",
+      "sourceAgentId": "librarian"
+    }
+  ],
   "findings": [
     {
       "source": "url or file path",
@@ -35,7 +43,10 @@ Respond with this exact JSON structure:
   ],
   "summary": "2-3 sentence summary of key findings",
   "gaps": ["list of documentation gaps or missing information发现的文档差距或缺失信息"],
-  "recommendations": ["suggestions for what to explore next"]
+  "openQuestions": ["important unknowns or ambiguities still unresolved"],
+  "gotchas": ["version-specific behavior, deprecated APIs, or contradictions to avoid"],
+  "recommendations": ["suggestions for what to explore next"],
+  "recommendedContextForNextAgents": ["compact context that should be passed to implementation/review agents"]
 }
 ```
 

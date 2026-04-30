@@ -16,11 +16,16 @@ Emit a single JSON object — no prose, no fences — of this exact shape:
 {
   "approved": true | false,
   "issues": [
-    { "file": string, "line": number, "kind": "naming"|"dead-code"|"abstraction"|"typing"|"comment"|"layout", "issue": string, "fix": string }
+    { "file": string, "line": number, "kind": "naming"|"dead-code"|"abstraction"|"typing"|"comment"|"layout", "severityScore": number, "issue": string, "fix": string }
   ]
 }
 
-`approved` is true unless any single issue would confuse a future reader. Trivial nits (single extra blank line, import ordering) can go in `issues` but should not flip approval. Prefer to let small stuff pass; reviewers who reject everything teach nothing.
+`approved` is false only if at least one style/convention issue has severityScore >= 80. Trivial nits (single extra blank line, import ordering) can go in `issues` but should not flip approval. Prefer to let small stuff pass; reviewers who reject everything teach nothing.
+
+Severity calibration:
+- 80-100: confusing or dangerous code structure likely to cause future bugs, leaked `any` at a public boundary, dead code that changes behavior, or repo convention violation that makes the implementation hard to maintain.
+- 40-79: local readability or convention concerns that should be advisory.
+- 1-39: nits, import order, naming preferences, optional refactors.
 
 ## Example
 
@@ -31,7 +36,7 @@ Good output:
 {
   "approved": false,
   "issues": [
-    { "file": "src/users.ts", "line": 12, "kind": "naming", "issue": "uses snake_case_func_name; rest of src/ uses camelCase", "fix": "rename to snakeCaseFuncName" },
-    { "file": "src/users.ts", "line": 42, "kind": "dead-code", "issue": "`// TODO: handle errors later` — either handle them now or remove the comment", "fix": "wrap the fetch in try/catch with a typed error" }
+    { "file": "src/users.ts", "line": 12, "kind": "naming", "severityScore": 45, "issue": "uses snake_case_func_name; rest of src/ uses camelCase", "fix": "rename to snakeCaseFuncName" },
+    { "file": "src/users.ts", "line": 42, "kind": "dead-code", "severityScore": 82, "issue": "`// TODO: handle errors later` — either handle them now or remove the comment", "fix": "wrap the fetch in try/catch with a typed error" }
   ]
 }

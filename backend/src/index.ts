@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { ptyManager } from './pty-manager.js';
 import { agentStreamManager, type AgentEvent } from './agent-stream.js';
 import { startSidecar, stopSidecar } from './sidecar-lifecycle.js';
-import { milestones, modelConfig, agentCalls, type AgentCallRecord } from './db.js';
+import { milestones, modelConfig, agentCalls, runContext, normalizeRunContext, type AgentCallRecord } from './db.js';
 import { appSettings } from './app-settings.js';
 import { AGENT_RUNTIMES, DEFAULT_AGENT_RUNTIME, isAgentRuntimeId, runtimeFromLegacyUseOpencode } from './agent-runtime.js';
 import { loadProjectContext, saveProjectContext } from './project-context.js';
@@ -48,6 +48,21 @@ function broadcastToUI(type: string, payload: any) {
     if (ws.readyState === ws.OPEN) {
       ws.send(message);
     }
+  });
+}
+
+function readJsonBody<T = any>(req: http.IncomingMessage): Promise<T> {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch (err) {
+        reject(err);
+      }
+    });
+    req.on('error', reject);
   });
 }
 
@@ -500,6 +515,52 @@ const httpServer = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ error: String(err) }));
       }
     });
+    return;
+  }
+
+  // GET /api/runs/:runId/context — shared run-scoped context packet
+  if (req.method === 'GET' && url.pathname.startsWith('/api/runs/') && url.pathname.endsWith('/context')) {
+    const parts = url.pathname.split('/');
+    const runId = parts[parts.length - 2];
+    try {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(runContext.get(runId)));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: String(err) }));
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname.startsWith('/api/runs/') && url.pathname.endsWith('/context/append')) {
+    const parts = url.pathname.split('/');
+    const runId = parts[parts.length - 3];
+    try {
+      const body = await readJsonBody(req);
+      const patch = normalizeRunContext(body?.context ?? body);
+      const context = runContext.append(runId, patch);
+      broadcastToUI('run:context-updated', { runId, context });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(context));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: String(err) }));
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname.startsWith('/api/runs/') && url.pathname.endsWith('/context/reset')) {
+    const parts = url.pathname.split('/');
+    const runId = parts[parts.length - 3];
+    try {
+      const context = runContext.reset(runId);
+      broadcastToUI('run:context-updated', { runId, context });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(context));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: String(err) }));
+    }
     return;
   }
 
