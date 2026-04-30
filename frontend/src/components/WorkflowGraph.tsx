@@ -1,6 +1,7 @@
 // frontend/src/components/WorkflowGraph.tsx
 import { useState, useEffect, useMemo } from 'react';
 import { getPipeline } from '../lib/pipelines';
+import { subscribe } from '../lib/ipc';
 
 interface WorkflowNode {
   id: string;
@@ -113,6 +114,7 @@ export function WorkflowGraph({ runId, workflowType }: Props) {
           })}
         </div>
       )}
+      <RunContextPanel runId={runId} />
     </div>
   );
 }
@@ -122,4 +124,175 @@ function labelFor(type: WorkflowNode['type'], status: WorkflowNode['status'], ru
   const s = status === 'pending' ? 'pending' : status === 'running' ? 'running' : status === 'completed' ? 'done' : 'failed';
   const suffix = runs > 1 ? ` · ×${runs}` : '';
   return `${t} · ${s}${suffix}`;
+}
+
+interface RunContext {
+  facts: string[];
+  fileFindings: Array<{ path: string; summary: string; sourceAgentId: string }>;
+  decisions: string[];
+  openQuestions: string[];
+  issues: string[];
+  verification: string[];
+  gotchas: string[];
+  agentSummaries: Array<{
+    agentId: string;
+    agentName: string;
+    category?: string;
+    summary: string;
+    createdAt: number;
+  }>;
+}
+
+const EMPTY_CONTEXT: RunContext = {
+  facts: [],
+  fileFindings: [],
+  decisions: [],
+  openQuestions: [],
+  issues: [],
+  verification: [],
+  gotchas: [],
+  agentSummaries: [],
+};
+
+function RunContextPanel({ runId }: { runId?: string }) {
+  const [context, setContext] = useState<RunContext>(EMPTY_CONTEXT);
+
+  useEffect(() => {
+    let cancelled = false;
+    setContext(EMPTY_CONTEXT);
+    if (!runId) return;
+
+    const load = async () => {
+      try {
+        const response = await fetch(`http://localhost:3001/api/runs/${encodeURIComponent(runId)}/context`);
+        if (!response.ok) return;
+        const next = await response.json();
+        if (!cancelled) setContext(normalizeContext(next));
+      } catch {
+        if (!cancelled) setContext(EMPTY_CONTEXT);
+      }
+    };
+
+    void load();
+    const unsub = subscribe('run:context-updated', (payload: { runId?: string; context?: unknown }) => {
+      if (payload?.runId !== runId) return;
+      setContext(normalizeContext(payload.context));
+    });
+    return () => {
+      cancelled = true;
+      unsub();
+    };
+  }, [runId]);
+
+  const hasContext = context.facts.length > 0
+    || context.fileFindings.length > 0
+    || context.decisions.length > 0
+    || context.openQuestions.length > 0
+    || context.issues.length > 0
+    || context.verification.length > 0
+    || context.gotchas.length > 0
+    || context.agentSummaries.length > 0;
+
+  return (
+    <div className="border-t border-[var(--color-hair)] px-5 py-4">
+      <div className="text-[11px] text-[var(--color-text-faint)] mb-1">Shared Context</div>
+      <div className="text-[15px] font-medium text-[var(--color-text)] mb-3">Run Packet</div>
+      {!runId ? (
+        <div className="text-[12px] text-[var(--color-text-muted)]">Context starts when a run is active.</div>
+      ) : !hasContext ? (
+        <div className="text-[12px] text-[var(--color-text-muted)]">No shared context recorded yet.</div>
+      ) : (
+        <div className="space-y-4">
+          <ContextList title="Facts" items={context.facts.slice(-6)} />
+          <ContextList title="Decisions" items={context.decisions.slice(-5)} />
+          <ContextList title="Issues" items={[...context.issues, ...context.gotchas].slice(-6)} />
+          <ContextList title="Verification" items={context.verification.slice(-5)} />
+          {context.fileFindings.length > 0 && (
+            <div>
+              <div className="mb-1.5 text-[11px] uppercase tracking-[0.08em] text-[var(--color-text-faint)]">Files</div>
+              <div className="space-y-2">
+                {context.fileFindings.slice(-6).map((finding, idx) => (
+                  <div key={`${finding.path}-${idx}`} className="text-[12px] leading-snug">
+                    <div className="font-mono text-[var(--color-text-dim)] truncate">{finding.path}</div>
+                    <div className="mt-0.5 text-[var(--color-text-muted)]">{finding.summary}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {context.agentSummaries.length > 0 && (
+            <div>
+              <div className="mb-1.5 text-[11px] uppercase tracking-[0.08em] text-[var(--color-text-faint)]">Recent Agents</div>
+              <div className="space-y-2">
+                {context.agentSummaries.slice(-5).map((summary, idx) => (
+                  <div key={`${summary.agentId}-${summary.createdAt}-${idx}`} className="text-[12px] leading-snug">
+                    <div className="text-[var(--color-text-dim)] truncate">{summary.agentName}</div>
+                    <div className="mt-0.5 text-[var(--color-text-muted)]">{summary.summary}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ContextList({ title, items }: { title: string; items: string[] }) {
+  if (items.length === 0) return null;
+  return (
+    <div>
+      <div className="mb-1.5 text-[11px] uppercase tracking-[0.08em] text-[var(--color-text-faint)]">{title}</div>
+      <ul className="space-y-1.5">
+        {items.map((item, idx) => (
+          <li key={`${title}-${idx}`} className="text-[12px] leading-snug text-[var(--color-text-muted)]">
+            {item}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function normalizeContext(value: unknown): RunContext {
+  const input = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  return {
+    facts: stringArray(input.facts),
+    fileFindings: Array.isArray(input.fileFindings)
+      ? input.fileFindings.flatMap((item) => {
+        if (!item || typeof item !== 'object') return [];
+        const row = item as Record<string, unknown>;
+        if (typeof row.path !== 'string' || typeof row.summary !== 'string') return [];
+        return [{
+          path: row.path,
+          summary: row.summary,
+          sourceAgentId: typeof row.sourceAgentId === 'string' ? row.sourceAgentId : 'unknown',
+        }];
+      })
+      : [],
+    decisions: stringArray(input.decisions),
+    openQuestions: stringArray(input.openQuestions),
+    issues: stringArray(input.issues),
+    verification: stringArray(input.verification),
+    gotchas: stringArray(input.gotchas),
+    agentSummaries: Array.isArray(input.agentSummaries)
+      ? input.agentSummaries.flatMap((item) => {
+        if (!item || typeof item !== 'object') return [];
+        const row = item as Record<string, unknown>;
+        if (typeof row.agentId !== 'string' || typeof row.agentName !== 'string' || typeof row.summary !== 'string') return [];
+        return [{
+          agentId: row.agentId,
+          agentName: row.agentName,
+          category: typeof row.category === 'string' ? row.category : undefined,
+          summary: row.summary,
+          createdAt: typeof row.createdAt === 'number' ? row.createdAt : 0,
+        }];
+      })
+      : [],
+  };
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string' && v.trim().length > 0) : [];
 }

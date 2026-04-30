@@ -9,6 +9,7 @@ import { loadPersona } from '../personaLoader.js';
 import { withJsonRetry } from '../llm/withJsonRetry.js';
 import { notifyAgentStart, notifyAgentComplete } from '../activities.js';
 import { useOpencode } from '../llm/featureFlags.js';
+import { contextBroker } from './context-broker.js';
 
 export type Category =
   | 'visual-engineering'   // Gemini for UI/frontend work
@@ -150,7 +151,7 @@ export async function delegateByCategory(
     `${config.agentRouting.primaryAgent}-${Date.now()}`,
     config.agentRouting.primaryAgent,
     parentSessionId,
-    options,
+    { ...options, category },
   );
 
   // Launch supporting agents in parallel
@@ -162,7 +163,7 @@ export async function delegateByCategory(
         `${agent}-${Date.now()}`,
         agent,
         parentSessionId,
-        options,
+        { ...options, category },
       );
     }
   }
@@ -188,23 +189,37 @@ export async function runCategoryRoute(
 
   let result: string;
   try {
+    const sharedContext = await contextBroker.formatForPrompt(input.runId);
+    const prompt = `${input.task}${sharedContext}`;
     if (await useOpencode()) {
       result = await sendAgentPrompt({
         runId: input.runId ?? '',
         personaKey: agentId,
         personaText: primaryPersona,
-        userPrompt: input.task,
+        userPrompt: prompt,
       });
     } else {
-      result = await callLLM(primaryPersona, input.task, {
+      result = await callLLM(primaryPersona, prompt, {
         cwd: input.cwd,
         agentId,
         runId: input.runId,
       });
     }
-    await notifyAgentComplete({ agentId, status: 'completed', output: result.slice(0, 500) });
+    await contextBroker.recordAgentResult(input.runId, {
+      agentId,
+      agentName: `Category Route (${category})`,
+      category,
+      output: result,
+    });
+    await notifyAgentComplete({ agentId, status: 'completed', output: result.slice(0, 500), runId: input.runId });
   } catch (e) {
-    await notifyAgentComplete({ agentId, status: 'error', output: String(e).slice(0, 500) });
+    await contextBroker.recordAgentResult(input.runId, {
+      agentId,
+      agentName: `Category Route (${category})`,
+      category,
+      error: String(e),
+    });
+    await notifyAgentComplete({ agentId, status: 'error', output: String(e).slice(0, 500), runId: input.runId });
     result = `Error: ${String(e)}`;
   }
 
@@ -218,7 +233,7 @@ export async function runCategoryRoute(
         `${agent}-bg-${Date.now()}`,
         agent,
         input.parentSessionId,
-        { runId: input.runId, cwd: input.cwd },
+        { runId: input.runId, cwd: input.cwd, category },
       );
     }
   }

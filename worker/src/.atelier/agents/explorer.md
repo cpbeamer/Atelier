@@ -24,6 +24,14 @@ Respond with this exact JSON structure:
 
 ```json
 {
+  "facts": ["stable facts later agents should know"],
+  "fileFindings": [
+    {
+      "path": "relative/file/path.ext",
+      "summary": "what this file reveals about implementation or conventions",
+      "sourceAgentId": "explorer"
+    }
+  ],
   "entryPoints": [
     {
       "path": "file or directory path",
@@ -45,6 +53,10 @@ Respond with this exact JSON structure:
       "interpretation": "what this pattern reveals"
     }
   ],
+  "conventions": ["codebase conventions or patterns implementation agents should follow"],
+  "gotchas": ["surprising structure, risky dependencies, or places to avoid"],
+  "openQuestions": ["important unknowns still unresolved"],
+  "recommendedContextForNextAgents": ["compact context that should be passed to implementation/review agents"],
   "architecture": "brief description of the overall architecture",
   "summary": "one-line summary of what this codebase does"
 }

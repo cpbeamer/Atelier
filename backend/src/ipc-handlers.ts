@@ -498,8 +498,11 @@ register('workflow.start', async (opts: { name: string; input?: unknown }) => {
   );
   let handle;
   try {
+    const workflowInput = opts.input && typeof opts.input === 'object' && !Array.isArray(opts.input)
+      ? { ...(opts.input as Record<string, unknown>), runId }
+      : opts.input ?? {};
     handle = await client.workflow.start(workflowType, {
-      args: [opts.input ?? {}],
+      args: [workflowInput],
       taskQueue: 'atelier-default-ts',
       workflowId: `${opts.name}-${runId}`,
     });

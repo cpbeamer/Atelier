@@ -111,6 +111,12 @@ function migrate() {
       updated_at INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS run_context (
+      run_id TEXT PRIMARY KEY,
+      context_json TEXT NOT NULL DEFAULT '{}',
+      updated_at INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS app_settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL,
@@ -296,4 +302,139 @@ export const projectContext = {
       VALUES (?, ?, ?)
       ON CONFLICT(project_id) DO UPDATE SET context_json = excluded.context_json, updated_at = excluded.updated_at
     `).run(projectId, contextJson, Date.now()),
+};
+
+export interface RunContext {
+  facts: string[];
+  fileFindings: Array<{ path: string; summary: string; sourceAgentId: string }>;
+  decisions: string[];
+  openQuestions: string[];
+  issues: string[];
+  verification: string[];
+  gotchas: string[];
+  agentSummaries: Array<{
+    agentId: string;
+    agentName: string;
+    category?: string;
+    summary: string;
+    createdAt: number;
+  }>;
+}
+
+export const EMPTY_RUN_CONTEXT: RunContext = {
+  facts: [],
+  fileFindings: [],
+  decisions: [],
+  openQuestions: [],
+  issues: [],
+  verification: [],
+  gotchas: [],
+  agentSummaries: [],
+};
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string' && v.trim().length > 0) : [];
+}
+
+export function normalizeRunContext(value: unknown): RunContext {
+  const input = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  const fileFindings = Array.isArray(input.fileFindings)
+    ? input.fileFindings.flatMap((item) => {
+      if (!item || typeof item !== 'object') return [];
+      const row = item as Record<string, unknown>;
+      if (typeof row.path !== 'string' || typeof row.summary !== 'string') return [];
+      return [{
+        path: row.path,
+        summary: row.summary,
+        sourceAgentId: typeof row.sourceAgentId === 'string' ? row.sourceAgentId : 'unknown',
+      }];
+    })
+    : [];
+  const agentSummaries = Array.isArray(input.agentSummaries)
+    ? input.agentSummaries.flatMap((item) => {
+      if (!item || typeof item !== 'object') return [];
+      const row = item as Record<string, unknown>;
+      if (typeof row.agentId !== 'string' || typeof row.agentName !== 'string' || typeof row.summary !== 'string') return [];
+      return [{
+        agentId: row.agentId,
+        agentName: row.agentName,
+        category: typeof row.category === 'string' ? row.category : undefined,
+        summary: row.summary,
+        createdAt: typeof row.createdAt === 'number' ? row.createdAt : Date.now(),
+      }];
+    })
+    : [];
+
+  return {
+    facts: stringArray(input.facts),
+    fileFindings,
+    decisions: stringArray(input.decisions),
+    openQuestions: stringArray(input.openQuestions),
+    issues: stringArray(input.issues),
+    verification: stringArray(input.verification),
+    gotchas: stringArray(input.gotchas),
+    agentSummaries,
+  };
+}
+
+function mergeStrings(existing: string[], incoming: string[]): string[] {
+  const seen = new Set(existing);
+  const merged = [...existing];
+  for (const item of incoming) {
+    if (seen.has(item)) continue;
+    seen.add(item);
+    merged.push(item);
+  }
+  return merged;
+}
+
+export function mergeRunContext(existing: RunContext, patch: Partial<RunContext>): RunContext {
+  const normalizedPatch = normalizeRunContext(patch);
+  const fileKeys = new Set(existing.fileFindings.map((f) => `${f.path}\n${f.summary}`));
+  const fileFindings = [...existing.fileFindings];
+  for (const item of normalizedPatch.fileFindings) {
+    const key = `${item.path}\n${item.summary}`;
+    if (fileKeys.has(key)) continue;
+    fileKeys.add(key);
+    fileFindings.push(item);
+  }
+
+  return {
+    facts: mergeStrings(existing.facts, normalizedPatch.facts),
+    fileFindings,
+    decisions: mergeStrings(existing.decisions, normalizedPatch.decisions),
+    openQuestions: mergeStrings(existing.openQuestions, normalizedPatch.openQuestions),
+    issues: mergeStrings(existing.issues, normalizedPatch.issues),
+    verification: mergeStrings(existing.verification, normalizedPatch.verification),
+    gotchas: mergeStrings(existing.gotchas, normalizedPatch.gotchas),
+    agentSummaries: [...existing.agentSummaries, ...normalizedPatch.agentSummaries].slice(-100),
+  };
+}
+
+export const runContext = {
+  get: (runId: string): RunContext => {
+    const row = getDb().prepare('SELECT context_json FROM run_context WHERE run_id = ?').get(runId) as { context_json: string } | undefined;
+    if (!row) return { ...EMPTY_RUN_CONTEXT };
+    try {
+      return normalizeRunContext(JSON.parse(row.context_json));
+    } catch {
+      return { ...EMPTY_RUN_CONTEXT };
+    }
+  },
+  set: (runId: string, context: RunContext) =>
+    getDb().prepare(`
+      INSERT INTO run_context (run_id, context_json, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(run_id) DO UPDATE SET context_json = excluded.context_json, updated_at = excluded.updated_at
+    `).run(runId, JSON.stringify(normalizeRunContext(context)), Date.now()),
+  append: (runId: string, patch: Partial<RunContext>): RunContext => {
+    const next = mergeRunContext(runContext.get(runId), patch);
+    runContext.set(runId, next);
+    return next;
+  },
+  reset: (runId: string): RunContext => {
+    const empty = { ...EMPTY_RUN_CONTEXT };
+    runContext.set(runId, empty);
+    return empty;
+  },
 };

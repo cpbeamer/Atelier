@@ -111,8 +111,8 @@ export interface PanelReviewInput {
 
 export interface PanelReviewResult {
   approved: boolean;
-  blockers: Array<{ from: string; detail: string }>;
-  advisories: Array<{ from: string; detail: string }>;
+  blockers: Array<{ from: string; detail: string; severityScore?: number }>;
+  advisories: Array<{ from: string; detail: string; severityScore?: number }>;
   summary: string;
   /** Raw per-specialist verdicts, keyed by specialist name. Useful for audit. */
   rawVerdicts: Record<string, unknown>;
@@ -207,6 +207,7 @@ import { runCliAgent } from './llm/cliAgent.js';
 import { sendAgentPrompt } from './llm/opencodeServeClient.js';
 import { OPENCODE_API_KEY_ENV, writeOpencodeConfig } from './llm/opencodeConfig.js';
 import { BackgroundManager } from './subagent/index.js';
+import { contextBroker } from './subagent/context-broker.js';
 
 async function readFile(filePath: string): Promise<string> {
   return fs.promises.readFile(filePath, 'utf-8');
@@ -231,6 +232,7 @@ function execCmd(command: string, args: string[], cwd?: string, timeoutMs = 60 *
 }
 
 const bgManager = BackgroundManager.getInstance();
+const REVIEW_BLOCKER_THRESHOLD = 80;
 
 // M2.7 wraps reasoning in <think>...</think> tags; strip these before parsing
 // structured output so hidden content never smuggles through file-edit markers
@@ -362,7 +364,9 @@ export async function spawnAgent(
   agentName: string,
   persona: string,
   task: string,
-  context?: Record<string, string>
+  context?: Record<string, string>,
+  runId?: string,
+  category?: string,
 ): Promise<string> {
   // Build context string for agents that receive prior agent outputs
   let contextStr = '';
@@ -380,9 +384,27 @@ export async function spawnAgent(
     throw new Error(`Persona file not found: ${personaPath}`);
   }
   const systemPrompt = await personaFile.text();
-  const fullPrompt = `${task}${contextStr}`;
+  const sharedContext = await contextBroker.formatForPrompt(runId);
+  const fullPrompt = `${task}${contextStr}${sharedContext}`;
 
-  return callLLM(systemPrompt, fullPrompt);
+  try {
+    const result = await callLLM(systemPrompt, fullPrompt, { agentId: persona, runId });
+    await contextBroker.recordAgentResult(runId, {
+      agentId: persona,
+      agentName,
+      category,
+      output: result,
+    });
+    return result;
+  } catch (err) {
+    await contextBroker.recordAgentResult(runId, {
+      agentId: persona,
+      agentName,
+      category,
+      error: String(err),
+    });
+    throw err;
+  }
 }
 
 // Gather raw repo context that all researcher specialists share.
@@ -501,18 +523,36 @@ export async function researchRepo(input: ResearchInput): Promise<ResearchOutput
               () => Promise.resolve(text),
               { maxAttempts: 3, validate: (v) => typeof v === 'object' && v !== null },
             );
-            await notifyAgentComplete({ agentId: librarianAgentId, status: 'completed', output: JSON.stringify(out).slice(0, 500) });
+            await contextBroker.recordAgentResult(runId, {
+              agentId: librarianAgentId,
+              agentName: 'Librarian',
+              category: 'docs-research',
+              output: JSON.stringify(out),
+            });
+            await notifyAgentComplete({ agentId: librarianAgentId, status: 'completed', output: JSON.stringify(out).slice(0, 500), runId });
             return out;
           } else {
             const out = await withJsonRetry<Record<string, unknown>>(
               (suffix) => callLLM(librarianPersona, `${baseContext}${suffix ?? ''}`, { cwd: projectPath, agentId: librarianAgentId, runId }),
               { maxAttempts: 2, validate: (v) => typeof v === 'object' && v !== null },
             );
-            await notifyAgentComplete({ agentId: librarianAgentId, status: 'completed', output: JSON.stringify(out).slice(0, 500) });
+            await contextBroker.recordAgentResult(runId, {
+              agentId: librarianAgentId,
+              agentName: 'Librarian',
+              category: 'docs-research',
+              output: JSON.stringify(out),
+            });
+            await notifyAgentComplete({ agentId: librarianAgentId, status: 'completed', output: JSON.stringify(out).slice(0, 500), runId });
             return out;
           }
         } catch (e) {
-          await notifyAgentComplete({ agentId: librarianAgentId, status: 'error', output: String(e).slice(0, 500) });
+          await contextBroker.recordAgentResult(runId, {
+            agentId: librarianAgentId,
+            agentName: 'Librarian',
+            category: 'docs-research',
+            error: String(e),
+          });
+          await notifyAgentComplete({ agentId: librarianAgentId, status: 'error', output: String(e).slice(0, 500), runId });
           return { error: String(e) };
         }
       })(),
@@ -529,18 +569,36 @@ export async function researchRepo(input: ResearchInput): Promise<ResearchOutput
               () => Promise.resolve(text),
               { maxAttempts: 3, validate: (v) => typeof v === 'object' && v !== null },
             );
-            await notifyAgentComplete({ agentId: explorerAgentId, status: 'completed', output: JSON.stringify(out).slice(0, 500) });
+            await contextBroker.recordAgentResult(runId, {
+              agentId: explorerAgentId,
+              agentName: 'Explorer',
+              category: 'code-exploration',
+              output: JSON.stringify(out),
+            });
+            await notifyAgentComplete({ agentId: explorerAgentId, status: 'completed', output: JSON.stringify(out).slice(0, 500), runId });
             return out;
           } else {
             const out = await withJsonRetry<Record<string, unknown>>(
               (suffix) => callLLM(explorerPersona, `${baseContext}${suffix ?? ''}`, { cwd: projectPath, agentId: explorerAgentId, runId }),
               { maxAttempts: 2, validate: (v) => typeof v === 'object' && v !== null },
             );
-            await notifyAgentComplete({ agentId: explorerAgentId, status: 'completed', output: JSON.stringify(out).slice(0, 500) });
+            await contextBroker.recordAgentResult(runId, {
+              agentId: explorerAgentId,
+              agentName: 'Explorer',
+              category: 'code-exploration',
+              output: JSON.stringify(out),
+            });
+            await notifyAgentComplete({ agentId: explorerAgentId, status: 'completed', output: JSON.stringify(out).slice(0, 500), runId });
             return out;
           }
         } catch (e) {
-          await notifyAgentComplete({ agentId: explorerAgentId, status: 'error', output: String(e).slice(0, 500) });
+          await contextBroker.recordAgentResult(runId, {
+            agentId: explorerAgentId,
+            agentName: 'Explorer',
+            category: 'code-exploration',
+            error: String(e),
+          });
+          await notifyAgentComplete({ agentId: explorerAgentId, status: 'error', output: String(e).slice(0, 500), runId });
           return { error: String(e) };
         }
       })(),
@@ -1365,6 +1423,7 @@ ${ticket.acceptanceCriteria.map((c) => `- ${c}`).join('\n')}
 FILES CHANGED: ${implementation.filesChanged.join(', ')}
 
 Use your read tools to inspect the changed files. Evaluate strictly within your specialist scope. Respond with JSON only.
+Score each finding's real-world impact on a 1-100 severity scale. Only issues with severityScore >= ${REVIEW_BLOCKER_THRESHOLD} will be sent back for developer rework; lower scores are advisory and should not block progress.
 `;
 
     // NEW: Oracle architecture consultation in parallel with reviewer panel
@@ -1426,7 +1485,7 @@ Use your read tools to inspect the changed files. Evaluate strictly within your 
     const synthPersona = await loadPersona(process.cwd(), 'reviewer-synthesizer');
     const synthAgentId = 'reviewer-synthesizer';
     await notifyAgentStart({ agentId: synthAgentId, agentName: 'Reviewer Synthesizer', terminalType: 'direct-llm' });
-    type Synth = { approved: boolean; blockers: Array<{ from?: string; detail?: string } | string>; advisories: Array<{ from?: string; detail?: string } | string>; summary: string };
+    type Synth = { approved: boolean; blockers: Array<{ from?: string; detail?: string; severityScore?: number } | string>; advisories: Array<{ from?: string; detail?: string; severityScore?: number } | string>; summary: string };
     try {
       const synthText = await sendAgentPrompt({
         runId: runId ?? '',
@@ -1446,32 +1505,33 @@ Use your read tools to inspect the changed files. Evaluate strictly within your 
         },
       );
       await notifyAgentComplete({ agentId: synthAgentId, status: 'completed', output: JSON.stringify(synth).slice(0, 500) });
-      const normalize = (e: { from?: string; detail?: string } | string, fallbackFrom: string) =>
-        typeof e === 'string' ? { from: fallbackFrom, detail: e } : { from: e.from ?? fallbackFrom, detail: e.detail ?? '' };
+      const normalize = (e: { from?: string; detail?: string; severityScore?: number } | string, fallbackFrom: string) =>
+        normalizeReviewFinding(e, fallbackFrom);
+      const gated = applyReviewSeverityGate(
+        (synth.blockers ?? []).map((b) => normalize(b, synthAgentId)),
+        (synth.advisories ?? []).map((a) => normalize(a, synthAgentId)),
+      );
       return {
-        approved: synth.approved,
-        blockers: (synth.blockers ?? []).map((b) => normalize(b, synthAgentId)),
-        advisories: (synth.advisories ?? []).map((a) => normalize(a, synthAgentId)),
-        comments: [
-          ...(synth.blockers ?? []).map((b) => normalize(b, synthAgentId).detail),
-          ...(synth.advisories ?? []).map((a) => normalize(a, synthAgentId).detail),
-        ],
+        approved: gated.approved,
+        blockers: gated.blockers,
+        advisories: gated.advisories,
+        comments: gated.blockers.map((b) => `[${b.from}] ${b.detail}`),
         summary: synth.summary ?? '',
         rawVerdicts,
       };
     } catch {
       await notifyAgentComplete({ agentId: synthAgentId, status: 'error', output: 'synthesis failed' });
-      const allApproved = Object.values(rawVerdicts).every((v) => (v as any).approved === true);
       const allComments = Object.entries(rawVerdicts).flatMap(([from, v]) =>
         Array.isArray((v as any).comments)
-          ? (v as any).comments.map((c: string) => ({ from, detail: c }))
+          ? (v as any).comments.map((c: string) => normalizeReviewFinding(c, from))
           : [],
       );
+      const gated = applyReviewSeverityGate(allComments, []);
       return {
-        approved: allApproved,
-        blockers: allApproved ? [] : allComments,
-        advisories: allApproved ? allComments : [],
-        comments: allComments.map((c) => c.detail),
+        approved: gated.approved,
+        blockers: gated.blockers,
+        advisories: gated.advisories,
+        comments: gated.blockers.map((c) => c.detail),
         summary: '',
         rawVerdicts,
       };
@@ -1496,6 +1556,7 @@ Current file contents on disk:
 ${fileContents}
 
 Evaluate strictly within your specialist scope. Respond with JSON only.
+Score each finding's real-world impact on a 1-100 severity scale. Only issues with severityScore >= ${REVIEW_BLOCKER_THRESHOLD} will be sent back for developer rework; lower scores are advisory and should not block progress.
 `;
 
   const verdicts = await Promise.all(
@@ -1535,7 +1596,7 @@ Evaluate strictly within your specialist scope. Respond with JSON only.
   const synthPersona = await loadPersona(process.cwd(), 'reviewer-synthesizer');
   const synthAgentId = 'reviewer-synthesizer';
   await notifyAgentStart({ agentId: synthAgentId, agentName: 'Reviewer Synthesizer', terminalType: 'direct-llm' });
-  type Synth = { approved: boolean; blockers: Array<{ from?: string; detail?: string } | string>; advisories: Array<{ from?: string; detail?: string } | string>; summary: string };
+  type Synth = { approved: boolean; blockers: Array<{ from?: string; detail?: string; severityScore?: number } | string>; advisories: Array<{ from?: string; detail?: string; severityScore?: number } | string>; summary: string };
   let synth: Synth;
   try {
     synth = await withJsonRetry<Synth>(
@@ -1560,48 +1621,110 @@ Evaluate strictly within your specialist scope. Respond with JSON only.
   }
   await notifyAgentComplete({ agentId: synthAgentId, status: 'completed', output: synth.summary });
 
-  const normalize = (e: { from?: string; detail?: string } | string, fallbackFrom: string) =>
-    typeof e === 'string'
-      ? { from: fallbackFrom, detail: e }
-      : { from: e.from ?? fallbackFrom, detail: e.detail ?? JSON.stringify(e) };
-
-  const blockers = synth.blockers.map((b) => normalize(b, 'panel'));
-  const advisories = synth.advisories.map((a) => normalize(a, 'panel'));
+  const blockers = synth.blockers.map((b) => normalizeReviewFinding(b, 'panel'));
+  const advisories = synth.advisories.map((a) => normalizeReviewFinding(a, 'panel'));
+  const gated = applyReviewSeverityGate(blockers, advisories);
 
   return {
-    approved: synth.approved,
-    blockers,
-    advisories,
+    approved: gated.approved,
+    blockers: gated.blockers,
+    advisories: gated.advisories,
     summary: synth.summary,
     rawVerdicts,
-    comments: blockers.map((b) => `[${b.from}] ${b.detail}`),
+    comments: gated.blockers.map((b) => `[${b.from}] ${b.detail}`),
   };
 }
 
 function fallbackSynthesize(rawVerdicts: Record<string, any>): {
   approved: boolean;
-  blockers: Array<{ from: string; detail: string }>;
-  advisories: Array<{ from: string; detail: string }>;
+  blockers: Array<{ from: string; detail: string; severityScore?: number }>;
+  advisories: Array<{ from: string; detail: string; severityScore?: number }>;
   summary: string;
 } {
-  const blockers: Array<{ from: string; detail: string }> = [];
+  const candidates: Array<{ from: string; detail: string; severityScore?: number }> = [];
   for (const [specialist, v] of Object.entries(rawVerdicts)) {
     if (!v || typeof v !== 'object') continue;
     if (v.approved === false) {
       // Pull whatever findings are available — each specialist uses a slightly
       // different field name (comments/findings/untested/issues).
-      const raw = v.comments ?? v.findings ?? v.untested ?? v.issues ?? [`${specialist} did not approve`];
+      const raw = v.comments ?? v.findings ?? v.untested ?? v.issues ?? v.weakTests ?? [`${specialist} did not approve`];
       for (const item of (Array.isArray(raw) ? raw : [raw])) {
-        blockers.push({ from: specialist, detail: typeof item === 'string' ? item : JSON.stringify(item) });
+        candidates.push(normalizeReviewFinding(item, specialist));
       }
     }
   }
+  const gated = applyReviewSeverityGate(candidates, []);
   return {
-    approved: blockers.length === 0,
-    blockers,
-    advisories: [],
-    summary: blockers.length === 0 ? 'All specialists approved' : `${blockers.length} blocker(s) from panel (synthesizer fallback)`,
+    approved: gated.approved,
+    blockers: gated.blockers,
+    advisories: gated.advisories,
+    summary: gated.blockers.length === 0
+      ? 'No review findings met the rework threshold'
+      : `${gated.blockers.length} blocker(s) at severity >= ${REVIEW_BLOCKER_THRESHOLD} from panel (synthesizer fallback)`,
   };
+}
+
+type ScoredReviewFinding = { from: string; detail: string; severityScore?: number };
+
+export function applyReviewSeverityGate(
+  blockers: ScoredReviewFinding[],
+  advisories: ScoredReviewFinding[],
+  threshold = REVIEW_BLOCKER_THRESHOLD,
+): { approved: boolean; blockers: ScoredReviewFinding[]; advisories: ScoredReviewFinding[] } {
+  const all = [...blockers, ...advisories].filter((finding) => finding.detail.trim().length > 0);
+  const actionable = all.filter((finding) => reviewSeverityScore(finding) >= threshold);
+  const advisory = all.filter((finding) => reviewSeverityScore(finding) < threshold);
+  return {
+    approved: actionable.length === 0,
+    blockers: actionable,
+    advisories: advisory,
+  };
+}
+
+function normalizeReviewFinding(input: unknown, fallbackFrom: string): ScoredReviewFinding {
+  if (typeof input === 'string') {
+    return { from: fallbackFrom, detail: input, severityScore: inferReviewSeverity(input, fallbackFrom) };
+  }
+  if (!input || typeof input !== 'object') {
+    const detail = String(input ?? '');
+    return { from: fallbackFrom, detail, severityScore: inferReviewSeverity(detail, fallbackFrom) };
+  }
+
+  const row = input as Record<string, unknown>;
+  const file = typeof row.file === 'string' ? row.file : undefined;
+  const line = typeof row.line === 'number' ? row.line : undefined;
+  const issue = typeof row.issue === 'string' ? row.issue : undefined;
+  const fix = typeof row.fix === 'string' ? row.fix : undefined;
+  const detail = typeof row.detail === 'string'
+    ? row.detail
+    : file && issue
+      ? `${file}${line ? `:${line}` : ''} ${issue}${fix ? ` -> ${fix}` : ''}`
+      : JSON.stringify(row);
+  return {
+    from: typeof row.from === 'string' ? row.from : fallbackFrom,
+    detail,
+    severityScore: typeof row.severityScore === 'number'
+      ? row.severityScore
+      : inferReviewSeverity(detail, fallbackFrom, typeof row.severity === 'string' ? row.severity : undefined),
+  };
+}
+
+function reviewSeverityScore(finding: ScoredReviewFinding): number {
+  return typeof finding.severityScore === 'number'
+    ? Math.max(1, Math.min(100, finding.severityScore))
+    : inferReviewSeverity(finding.detail, finding.from);
+}
+
+function inferReviewSeverity(detail: string, from: string, label?: string): number {
+  const text = `${from} ${label ?? ''} ${detail}`.toLowerCase();
+  if (text.includes('blocker') || text.includes('sql injection') || text.includes('auth bypass') || text.includes('credential leak')) return 95;
+  if (text.includes('unmet') || text.includes('acceptance criterion') || text.includes('does not meet')) return 90;
+  if (text.includes('major') || text.includes('stored xss') || text.includes('csrf') || text.includes('data loss')) return 85;
+  if (text.includes('untested') && text.includes('acceptance')) return 82;
+  if (text.includes('partially_met') || text.includes('partially met')) return 75;
+  if (text.includes('minor') || text.includes('nit') || text.includes('style') || text.includes('suggestion')) return 35;
+  if (text.includes('did not approve') || text.includes('error')) return 60;
+  return 70;
 }
 
 interface TestCommand { cmd: string; args: string[]; label: string; }

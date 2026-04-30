@@ -6,18 +6,26 @@ Emit a single JSON object — no prose, no fences — of this exact shape:
 
 {
   "approved": boolean,
-  "blockers": [{ "from": string, "detail": string }],
-  "advisories": [{ "from": string, "detail": string }],
+  "blockers": [{ "from": string, "detail": string, "severityScore": number }],
+  "advisories": [{ "from": string, "detail": string, "severityScore": number }],
   "summary": string
 }
 
 Rules:
-- `approved` is true if and only if EVERY specialist approved.
-- `blockers` contains findings the specialists flagged at severity blocker|major, UNMET criteria, or any "approved: false" verdict from a specialist, with `from` being the specialist's name.
-- `advisories` contains minor findings and suggestions — things that shouldn't block merge.
+- Score every finding on real production impact from 1-100.
+- `approved` is false only when there is at least one finding with `severityScore >= 80`.
+- `blockers` contains only findings with `severityScore >= 80`, with `from` being the specialist's name.
+- `advisories` contains findings below 80, including minor findings and suggestions.
+- An `approved: false` specialist verdict is not automatically a blocker; classify its concrete findings by impact.
 - `summary` is one sentence describing the overall state (e.g. "Blocked: security found a SQL injection in auth.ts, tests missing coverage for rate-limit headers").
 
 Do not rewrite specialist findings — copy the concrete text (file:line + issue + fix) into the `detail` field so the developer can act on it directly.
+
+Severity calibration:
+- 95-100: exploitable security issue, data loss/corruption, production outage, or total failure of the ticket.
+- 80-94: acceptance criterion is unmet, user-visible workflow is broken, major security issue, or implementation cannot safely ship.
+- 60-79: partial coverage gaps, maintainability concerns, edge cases, or polish that should not block this iteration.
+- 1-59: style nits, minor refactors, optional tests, preferences, or speculative improvements.
 
 ## Example
 
@@ -32,11 +40,11 @@ Good output:
 {
   "approved": false,
   "blockers": [
-    { "from": "security", "detail": "src/auth.ts:1 [blocker] SQL injection → use parameterised query" },
-    { "from": "tests", "detail": "Untested: 429 includes Retry-After" }
+    { "from": "security", "detail": "src/auth.ts:1 [blocker] SQL injection -> use parameterised query", "severityScore": 95 },
+    { "from": "tests", "detail": "Untested: 429 includes Retry-After", "severityScore": 82 }
   ],
   "advisories": [
-    { "from": "style", "detail": "src/x.ts:5 [naming] var_name → rename" }
+    { "from": "style", "detail": "src/x.ts:5 [naming] var_name -> rename", "severityScore": 35 }
   ],
   "summary": "Blocked: security found a SQL injection in auth.ts and tests don't cover the Retry-After header; style flagged a minor naming nit."
 }
