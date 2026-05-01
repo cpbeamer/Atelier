@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { ptyManager } from './pty-manager.js';
 import { agentStreamManager, type AgentEvent } from './agent-stream.js';
 import { startSidecar, stopSidecar } from './sidecar-lifecycle.js';
-import { milestones, modelConfig, agentCalls, runContext, normalizeRunContext, type AgentCallRecord } from './db.js';
+import { milestones, modelConfig, agentCalls, runContext, normalizeRunContext, type AgentCallRecord, flushAgentCalls } from './db.js';
 import { appSettings } from './app-settings.js';
 import { AGENT_RUNTIMES, DEFAULT_AGENT_RUNTIME, isAgentRuntimeId, runtimeFromLegacyUseOpencode } from './agent-runtime.js';
 import { loadProjectContext, saveProjectContext } from './project-context.js';
@@ -768,6 +768,7 @@ if (!process.env.USE_EXTERNAL_TEMPORAL) {
 }
 
 process.on('SIGINT', async () => {
+  flushAgentCalls();
   await stopSidecar().catch(() => {});
   process.exit();
 });

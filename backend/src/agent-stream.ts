@@ -204,7 +204,7 @@ class AgentStreamManager {
   }
 
   getScrollback(id: string): AgentEvent[] {
-    return this.agents.get(id)?.events ?? [];
+    return (this.agents.get(id)?.events ?? []).slice(-500);
   }
 
   clear(id: string) {

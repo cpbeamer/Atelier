@@ -253,26 +253,53 @@ export interface AgentCallRecord {
   error?: string | null;
 }
 
-export const agentCalls = {
-  record: (row: AgentCallRecord) => {
-    const tx = getDb().transaction((r: AgentCallRecord) => {
-      getDb().prepare(`
-        INSERT INTO agent_calls
-        (run_id, agent_id, provider_id, model, kind, prompt_tokens, completion_tokens, cost_usd, duration_ms, started_at, completed_at, error)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
+const FLUSH_INTERVAL_MS = 5_000;
+const FLUSH_THRESHOLD = 50;
+
+let agentCallBuffer: AgentCallRecord[] = [];
+let flushTimer: ReturnType<typeof setInterval> | null = null;
+
+function ensureFlushTimer() {
+  if (!flushTimer) {
+    flushTimer = setInterval(flushAgentCallBuffer, FLUSH_INTERVAL_MS);
+  }
+}
+
+export function flushAgentCalls() {
+  flushAgentCallBuffer();
+}
+
+function flushAgentCallBuffer() {
+  if (agentCallBuffer.length === 0) return;
+  const batch = agentCallBuffer.splice(0);
+  const stmt = getDb().prepare(`
+    INSERT INTO agent_calls
+    (run_id, agent_id, provider_id, model, kind, prompt_tokens, completion_tokens, cost_usd, duration_ms, started_at, completed_at, error)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const updateRun = getDb().prepare(`
+    UPDATE workflow_runs
+    SET total_tokens = total_tokens + ?, total_cost_usd = total_cost_usd + ?
+    WHERE id = ?
+  `);
+  const tx = getDb().transaction(() => {
+    for (const r of batch) {
+      stmt.run(
         r.runId, r.agentId, r.providerId, r.model, r.kind ?? 'text',
         r.promptTokens, r.completionTokens, r.costUsd, r.durationMs,
         r.startedAt, r.completedAt, r.error ?? null,
       );
-      // Aggregate onto workflow_runs. Safe no-op if the run row doesn't exist yet.
-      getDb().prepare(`
-        UPDATE workflow_runs
-        SET total_tokens = total_tokens + ?, total_cost_usd = total_cost_usd + ?
-        WHERE id = ?
-      `).run(r.promptTokens + r.completionTokens, r.costUsd, r.runId);
-    });
-    tx(row);
+      updateRun.run(r.promptTokens + r.completionTokens, r.costUsd, r.runId);
+    }
+  });
+  tx();
+}
+
+export const agentCalls = {
+  record: (row: AgentCallRecord) => {
+    agentCallBuffer.push(row);
+    if (agentCallBuffer.length >= FLUSH_THRESHOLD) flushAgentCallBuffer();
+    else ensureFlushTimer();
   },
   totalsForRun: (runId: string) =>
     getDb().prepare('SELECT total_tokens, total_cost_usd FROM workflow_runs WHERE id = ?').get(runId) as
