@@ -19,9 +19,10 @@ type AgentEvent =
 interface Props {
   agentId: string;
   isActive: boolean;
+  autoSubscribe?: boolean;
 }
 
-export function AgentTranscript({ agentId, isActive }: Props) {
+export function AgentTranscript({ agentId, isActive, autoSubscribe = true }: Props) {
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -43,9 +44,9 @@ export function AgentTranscript({ agentId, isActive }: Props) {
         return [...prev, incoming];
       });
     });
-    send('agent-subscribe', { id: agentId });
+    if (autoSubscribe) send('agent-subscribe', { id: agentId });
     return unsub;
-  }, [agentId]);
+  }, [agentId, autoSubscribe]);
 
   useEffect(() => {
     const el = scrollRef.current;

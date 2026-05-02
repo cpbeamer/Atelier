@@ -1,9 +1,10 @@
 // frontend/src/App.tsx
 import { useState, useCallback, useEffect } from 'react';
 import { Sidebar } from './components/Sidebar';
-import { TerminalGrid, TerminalPaneConfig } from './components/TerminalGrid';
+import type { TerminalPaneConfig } from './components/TerminalGrid';
+import { AgentWorkspace } from './components/AgentWorkspace';
 import { MilestoneInbox } from './components/MilestoneInbox';
-import { WorkflowGraph } from './components/WorkflowGraph';
+import { ArtifactLedger } from './components/ArtifactLedger';
 import { SettingsModal } from './components/SettingsModal';
 import type { Project } from './lib/db';
 import { invoke, send, subscribe } from './lib/ipc';
@@ -21,17 +22,6 @@ const AUTOPILOT_PANES: TerminalPaneConfig[] = [
   { id: 'pusher', agentName: 'Pusher', agentType: 'direct-llm', status: 'waiting' },
 ];
 
-const AUTOPILOT_CONNECTIONS = [
-  { from: 'researcher', to: 'debate-a', type: 'signal' as const },
-  { from: 'researcher', to: 'debate-b', type: 'noise' as const },
-  { from: 'debate-a', to: 'architect', type: 'parent-child' as const },
-  { from: 'debate-b', to: 'architect', type: 'parent-child' as const },
-  { from: 'architect', to: 'developer', type: 'parent-child' as const },
-  { from: 'developer', to: 'reviewer', type: 'parent-child' as const },
-  { from: 'reviewer', to: 'tester', type: 'parent-child' as const },
-  { from: 'tester', to: 'pusher', type: 'parent-child' as const },
-];
-
 interface PreflightResult {
   ok: boolean;
   checks: Array<{ id: string; label: string; ok: boolean; detail?: string; required: boolean }>;
@@ -40,8 +30,8 @@ interface PreflightResult {
 function App() {
   const [activeProject, setActiveProject] = useState<Project | null>(null);
   const [activeRun, setActiveRun] = useState<string | null>(null);
-  const [activeWorkflowType, setActiveWorkflowType] = useState<string | null>(null);
   const [panes, setPanes] = useState<TerminalPaneConfig[]>([]);
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [showInbox, setShowInbox] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [workflowActive, setWorkflowActive] = useState(false);
@@ -70,6 +60,7 @@ function App() {
           status: 'running',
         }];
       });
+      setSelectedAgentId((current) => current ?? payload.agentId);
     });
     const unsubCompleted = subscribe('agent:completed', (payload: { agentId: string; status?: 'completed' | 'error'; runId?: string }) => {
       if (!payload?.agentId) return;
@@ -87,9 +78,9 @@ function App() {
   const startAutopilot = useCallback(async (project: Project) => {
     setAutopilotError(null);
     setActiveRun(null);
-    setActiveWorkflowType('autopilot');
     const live = AUTOPILOT_PANES.map((p) => ({ ...p, status: 'waiting' as const }));
     setPanes(live);
+    setSelectedAgentId(live[0]?.id ?? null);
     setWorkflowActive(true);
     try {
       const preflight = await invoke<PreflightResult>('app.preflight');
@@ -106,7 +97,6 @@ function App() {
         suggestedFeatures: [],
       });
       setActiveRun(runId);
-      setActiveWorkflowType('autopilot');
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setWorkflowActive(false);
@@ -134,6 +124,7 @@ function App() {
       { id: `${workflow.name}-validator`, agentName: `${workflow.name} · validator`, agentType: 'terminal', status: 'running' },
     ];
     setPanes(live);
+    setSelectedAgentId(live[0]?.id ?? null);
     setWorkflowActive(true);
     try {
       const { runId } = await invoke<{ runId: string }>('workflow.start', {
@@ -141,7 +132,6 @@ function App() {
         input: { language: workflow.language },
       });
       setActiveRun(runId);
-      setActiveWorkflowType(workflow.name);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setAutopilotError(`Couldn't start workflow: ${msg}`);
@@ -151,7 +141,8 @@ function App() {
   const handlePaneClose = useCallback((id: string) => {
     send('agent-kill', { id });
     setPanes((prev) => prev.filter((p) => p.id !== id));
-  }, []);
+    setSelectedAgentId((current) => current === id ? panes.find((p) => p.id !== id)?.id ?? null : current);
+  }, [panes]);
 
   const handlePaneAdd = useCallback(() => {
     const newId = `agent-${Date.now()}`;
@@ -162,6 +153,7 @@ function App() {
       status: 'running',
     };
     setPanes((prev) => [...prev, newPane]);
+    setSelectedAgentId(newId);
   }, []);
 
   return (
@@ -212,11 +204,12 @@ function App() {
         <div className="flex-1 flex overflow-hidden">
           <div className="flex-1 min-w-0">
             {workflowActive ? (
-              <TerminalGrid
-                panes={panes}
-                connections={AUTOPILOT_CONNECTIONS}
-                onPaneClose={handlePaneClose}
-                onPaneAdd={handlePaneAdd}
+              <AgentWorkspace
+                agents={panes}
+                selectedAgentId={selectedAgentId}
+                onSelectedAgentChange={setSelectedAgentId}
+                onAgentClose={handlePaneClose}
+                onAgentAdd={handlePaneAdd}
               />
             ) : (
               <EmptyState />
@@ -224,8 +217,10 @@ function App() {
           </div>
 
           {workflowActive && (
-            <div className="w-72 shrink-0 border-l border-[var(--color-hair)]">
-              <WorkflowGraph runId={activeRun || undefined} workflowType={activeWorkflowType || undefined} />
+            <div className="w-96 shrink-0 border-l border-[var(--color-hair)] flex flex-col">
+              <div className="flex-1 min-h-0">
+                <ArtifactLedger runId={activeRun || undefined} />
+              </div>
             </div>
           )}
         </div>
@@ -247,8 +242,8 @@ function EmptyState() {
           <span className="text-[var(--color-text-muted)]">for noisy agents.</span>
         </h1>
         <p className="mt-5 text-[13.5px] leading-[1.65] text-[var(--color-text-muted)]">
-          Pick a project to begin. Each agent streams its thinking, tools and
-          results into its own pane — composed, not shouted.
+          Pick a project to begin. Agents stay visible in one roster while the
+          focused transcript streams thinking, tools and results.
         </p>
       </div>
     </div>
